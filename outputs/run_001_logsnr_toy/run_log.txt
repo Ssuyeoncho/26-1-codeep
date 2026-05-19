@@ -1,0 +1,21 @@
+=== Toy log-SNR schedule analysis ===
+Timestamp: 2026-05-19 23:18:49
+Output directory: /Users/chosuyeon/Desktop/26-1-codeep/outputs/run_001_logsnr_toy
+
+Parameters:
+  d = 3.0
+  sigma0 = 1.0
+  ambiguous R interval = [1.5, 4.5]
+  ambiguous lambda interval ~= [-2.705809, 0.247345]
+  lambda=0 gives R = 4.242641
+
+Schedule metrics:
+            cosine: ambiguous_mass=0.378500, lambda_median=0.000000, first_t_R<4.5=0.460250, first_t_R<1.5=0.839250
+       linear_ddpm: ambiguous_mass=0.286000, lambda_median=-2.467183, first_t_R<4.5=0.235250, first_t_R<1.5=0.521750
+  laplace_centered: ambiguous_mass=0.693000, lambda_median=0.000000, first_t_R<4.5=0.302750, first_t_R<1.5=0.998250
+
+Conceptual note:
+  The paper is used as motivation only; this run is an R-based toy analysis.
+  R(lambda) describes the toy data geometry at a log-SNR value.
+  p(lambda) describes how often a schedule samples each log-SNR value.
+  The key question is whether p(lambda) overlaps the ambiguous R(lambda) region.

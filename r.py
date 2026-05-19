@@ -1,7 +1,20 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
+import os
+import datetime
+
 matplotlib.rcParams['font.size'] = 12
+
+# ─── Output directory & run numbering ───
+OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
+os.makedirs(OUT_DIR, exist_ok=True)
+
+existing = [f for f in os.listdir(OUT_DIR) if f.startswith("run_") and f.endswith(".png")]
+run_num = len(existing) + 1
+run_tag = f"run_{run_num:03d}"
+png_path = os.path.join(OUT_DIR, f"{run_tag}_mode_separation.png")
+log_path = os.path.join(OUT_DIR, f"{run_tag}_log.txt")
 
 # ─── Parameters ───
 d = 3.0      # half-distance between modes: modes at -d and +d
@@ -102,18 +115,44 @@ ax.legend(fontsize=11)
 ax.grid(True, alpha=0.2)
 
 plt.tight_layout(pad=2.0)
-plt.savefig('/home/claude/mode_separation.png', dpi=150, bbox_inches='tight',
-            facecolor='white')
+plt.savefig(png_path, dpi=150, bbox_inches='tight', facecolor='white')
 plt.close()
-print("Done! Saved to mode_separation.png")
 
-# Print key values
-print(f"\n=== Key Values (d={d}, σ={sigma}) ===")
-print(f"R(α̅=1.0) = {R(1.0):.2f}  (원본 분리도)")
-print(f"R(α̅=0.5) = {R(0.5):.2f}  (중간 지점)")
-print(f"R(α̅=0.0) = {R(1e-8):.4f}  (완전 노이즈)")
-if len(lin_cross_idx) > 0:
-    print(f"\nLinear: R=2 도달 시점 t={t_lin:.3f}")
-if len(cos_cross_idx) > 0:
-    print(f"Cosine: R=2 도달 시점 t={t_cos:.3f}")
-    print(f"→ Cosine이 Linear보다 t={t_cos-t_lin:.3f} 만큼 더 오래 구조 보존")
+# ─── Key values ───
+r_at_1   = R(1.0)
+r_at_05  = R(0.5)
+r_at_0   = R(1e-8)
+t_lin    = t_arr[lin_cross_idx[0]]  if len(lin_cross_idx) > 0 else None
+t_cos    = t_arr[cos_cross_idx[0]]  if len(cos_cross_idx) > 0 else None
+
+lines = [
+    f"=== Run: {run_tag} ===",
+    f"Timestamp : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+    f"Output PNG: {png_path}",
+    "",
+    f"--- Parameters ---",
+    f"d (half-distance between modes) = {d}",
+    f"sigma (std of each mode)        = {sigma}",
+    "",
+    f"--- Key R values ---",
+    f"R(alpha_bar=1.0) = {r_at_1:.4f}  (원본 분리도, pure signal)",
+    f"R(alpha_bar=0.5) = {r_at_05:.4f}  (중간 노이즈)",
+    f"R(alpha_bar->0 ) = {r_at_0:.6f}  (완전 노이즈)",
+    "",
+    f"--- Schedule crossover (R=2 도달 시점) ---",
+    f"Linear schedule : t = {t_lin:.4f}" if t_lin is not None else "Linear schedule : R=2 미도달",
+    f"Cosine schedule : t = {t_cos:.4f}" if t_cos is not None else "Cosine schedule : R=2 미도달",
+]
+if t_lin is not None and t_cos is not None:
+    lines.append(f"→ Cosine이 Linear보다 t={t_cos - t_lin:.4f} 만큼 더 오래 구조 보존")
+
+log_text = "\n".join(lines)
+
+# Print to terminal
+print(log_text)
+print(f"\n[저장 완료] PNG → {png_path}")
+print(f"[저장 완료] LOG → {log_path}")
+
+# Save log file
+with open(log_path, "w", encoding="utf-8") as f:
+    f.write(log_text + "\n")

@@ -42,6 +42,9 @@ from torch.utils.data import DataLoader, Dataset
 
 import matplotlib.pyplot as plt
 
+# GPU 전역 설정: cuDNN이 입력 크기에 맞는 가장 빠른 알고리즘을 자동 탐색
+torch.backends.cudnn.benchmark = True
+
 
 # =====================================================================
 # 1. Beta Schedules
@@ -285,26 +288,46 @@ class TinyDenoiser(nn.Module):
 
 @dataclass
 class TrainConfig:
-    T: int = 1000              # diffusion step 수
-    batch_size: int = 512
-    n_steps: int = 5000        # 학습 iteration 수 (toy니까 충분)
+    T: int = 1000
+    batch_size: int = 4096     # GPU 메모리 여유 있으면 8192까지 올려도 됨
+    n_steps: int = 5000
     lr: float = 2e-3
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     log_every: int = 500
+    num_workers: int = 4       # CPU 코어 수에 맞게 조절 (보통 4~8)
+    use_amp: bool = True       # Automatic Mixed Precision (CUDA 전용)
 
 
 def train_one_schedule(schedule_name: str, cfg: TrainConfig) -> Tuple[nn.Module, VPDiffusion, List[float]]:
     """주어진 schedule로 모델 하나 학습. (model, diffusion_helper, loss_history) 반환."""
-    print(f"\n[Train] schedule = {schedule_name}")
+    is_cuda = cfg.device == "cuda" and torch.cuda.is_available()
+    amp_enabled = cfg.use_amp and is_cuda
+
+    print(f"\n[Train] schedule={schedule_name}  device={cfg.device}  AMP={amp_enabled}")
+
     betas = SCHEDULES[schedule_name](cfg.T)
     diff = VPDiffusion(betas, device=cfg.device)
 
     dataset = GMM2D(n_samples=20000)
-    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
+    loader = DataLoader(
+        dataset,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        drop_last=True,
+        pin_memory=is_cuda,          # GPU 전송 전 메모리를 page-locked으로 고정
+        num_workers=cfg.num_workers if is_cuda else 0,
+        persistent_workers=is_cuda and cfg.num_workers > 0,
+    )
     loader_iter = iter(loader)
 
     model = TinyDenoiser().to(cfg.device)
+
+    # torch.compile: PyTorch 2.0+에서 커널 fusion / 최적화 그래프 생성
+    if is_cuda and hasattr(torch, "compile"):
+        model = torch.compile(model)
+
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    scaler = torch.amp.GradScaler(enabled=amp_enabled)
 
     losses: List[float] = []
     for step in range(cfg.n_steps):
@@ -313,19 +336,23 @@ def train_one_schedule(schedule_name: str, cfg: TrainConfig) -> Tuple[nn.Module,
         except StopIteration:
             loader_iter = iter(loader)
             x0 = next(loader_iter)
-        x0 = x0.to(cfg.device)
 
-        # 각 샘플마다 t를 uniform하게 뽑음 (= timestep에 대한 uniform sampling).
-        # Hang et al. 논문 관점에서는 이게 곧 p(λ)에 대한 importance sampling이 됨.
+        # non_blocking: CPU→GPU 전송을 다음 CUDA 연산과 겹쳐서 대기시간 제거
+        x0 = x0.to(cfg.device, non_blocking=True)
+
         t = torch.randint(0, cfg.T, (x0.size(0),), device=cfg.device)
         noise = torch.randn_like(x0)
         x_t = diff.q_sample(x0, t, noise)
-        eps_pred = model(x_t, t)
-        loss = F.mse_loss(eps_pred, noise)
+
+        # autocast: forward pass를 float16으로 실행해 Tensor Core 활용
+        with torch.amp.autocast(device_type="cuda" if is_cuda else "cpu", enabled=amp_enabled):
+            eps_pred = model(x_t, t)
+            loss = F.mse_loss(eps_pred, noise)
 
         opt.zero_grad()
-        loss.backward()
-        opt.step()
+        scaler.scale(loss).backward()
+        scaler.step(opt)
+        scaler.update()
 
         losses.append(loss.item())
         if (step + 1) % cfg.log_every == 0:

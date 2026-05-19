@@ -443,9 +443,22 @@ def plot_losses(loss_histories: Dict[str, List[float]],
 # 7. Main entry
 # =====================================================================
 
+def _next_run_dir() -> str:
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
+    os.makedirs(base, exist_ok=True)
+    existing = [
+        int(d.split("_")[0])
+        for d in os.listdir(base)
+        if d.split("_")[0].isdigit()
+    ]
+    n = max(existing, default=0) + 1
+    return os.path.join(base, f"{n}_")
+
+
 def main():
-    out_dir = "outputs"
+    out_dir = _next_run_dir()
     os.makedirs(out_dir, exist_ok=True)
+    print(f"[Run] 결과 저장 위치: {out_dir}")
 
     cfg = TrainConfig(
         T=1000,
@@ -480,7 +493,7 @@ def main():
     real = GMM2D(n_samples=2000, seed=123).data.numpy()
     plot_samples(samples_per_schedule, real, out_path=os.path.join(out_dir, "samples.png"))
 
-    print("\nDone. 그림은 outputs/ 에 저장됨.")
+    print(f"\nDone. 그림은 {out_dir} 에 저장됨.")
     print("다음 단계 아이디어:")
     print("  - schedule_diagnostics.png 의 p(lambda)/logSNR 모양과 samples.png의 분포 품질을 짝지어 보기")
     print("  - laplace의 b, logistic의 (k, t0)를 바꿔가며 'p(lambda) 봉우리 위치 vs 샘플 품질' 곡선 그리기")

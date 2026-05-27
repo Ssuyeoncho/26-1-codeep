@@ -1,0 +1,17 @@
+{
+  "d": 2.0,
+  "sigma0": 0.5,
+  "sigma_min": 0.01,
+  "sigma_max": 20.0,
+  "rho": 0.5,
+  "train_steps": 20,
+  "batch_size": 64,
+  "eval_batch_size": 256,
+  "eval_grid_size": 80,
+  "lr": 0.002,
+  "hidden_dim": 96,
+  "depth": 3,
+  "seed": 20260526,
+  "device": "cpu",
+  "run_name": "phase1_toy"
+}

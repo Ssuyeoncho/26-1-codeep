@@ -154,7 +154,7 @@ def transition_bounds(config: ExperimentConfig) -> tuple[float, float, float]:
     grid = np.linspace(config.lambda_min, config.lambda_max, 4000)
     slope = dmsr_slope_abs(grid, config.d, config.sigma0)
     mask = slope >= config.rho * slope.max()
-    return float(grid[mask][0]), float(-math.log(config.sigma0**2)), float(grid[mask][-1])
+    return float(grid[mask][0]), float(-math.log(2.0 * config.sigma0**2)), float(grid[mask][-1])
 
 
 def clamp_lambda(lam: Tensor, config: ExperimentConfig) -> Tensor:
@@ -193,7 +193,7 @@ def sample_schedule(spec: ScheduleSpec, n: int, config: ExperimentConfig, device
 
 
 def build_schedules(config: ExperimentConfig) -> list[ScheduleSpec]:
-    center = -math.log(config.sigma0**2)
+    center = -math.log(2.0 * config.sigma0**2)
     return [
         ScheduleSpec("cosine_vp", "cosine_vp", note="Cosine VP schedule induced density over lambda."),
         ScheduleSpec("linear_gamma", "linear_gamma", note="Chen-style gamma(t)=1-t baseline in VP lambda space."),

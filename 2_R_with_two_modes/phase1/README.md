@@ -15,7 +15,7 @@ sigma_lambda^2 = 1 / (1 + exp(lambda))
 
 ```text
 DMSR_VP(lambda) = 2 alpha_lambda d / sqrt(alpha_lambda^2 sigma0^2 + sigma_lambda^2)
-lambda_R* = -log(sigma0^2)
+lambda_R* = -log(2 sigma0^2)
 ```
 
 ## 실행

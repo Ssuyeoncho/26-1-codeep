@@ -42,7 +42,7 @@ DMSR_VP(lambda)
 |dDMSR / dlambda|
   = d exp(lambda / 2) / (1 + sigma0^2 exp(lambda))^(3/2)
 
-lambda_R* = -log(sigma0^2)
+lambda_R* = -log(2 sigma0^2)
 ```
 
 The transition region is:
@@ -154,7 +154,7 @@ plots/coverage_vs_transition_mse.png
 
 - Is the forward process VP, not VE additive noise?
 - Is the model predicting epsilon, not x0?
-- Is `lambda_R* = -log(sigma0^2)` used as the analytic toy center?
+- Is `lambda_R* = -log(2 sigma0^2)` used as the analytic toy center?
 - Is `T_R` computed from `|dDMSR/dlambda|`, not from DMSR itself?
 - Are schedule densities plotted in lambda space?
 - Are all schedules compared with the same model, optimizer, steps, batch size, and loss weighting?

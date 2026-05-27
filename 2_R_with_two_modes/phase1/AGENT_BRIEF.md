@@ -1,71 +1,57 @@
-# Phase 1 Agent Brief: R-Transition Toy Experiment
+# Phase 1 Agent Brief: VP DMSR-Transition Toy Experiment
 
 ## 1. Overall Research Goal
 
-This project studies diffusion training noise schedules from the perspective of mode/class separability.
+This project studies diffusion training noise schedules from the perspective of data-dependent mode/class separability.
 
-The central question is not simply:
+The intended question is not:
 
-> Is training near `logSNR = 0` useful?
+> Is training near logSNR = 0 always best?
 
 The intended question is:
 
-> Does performance improve when the training noise distribution covers the region where the data structure actually becomes ambiguous, as measured by a separability indicator `R`?
+> Does performance improve when the training noise distribution covers the region where the data structure actually becomes ambiguous, as measured by DMSR?
 
-The project combines three viewpoints:
-
-- Hang et al.: a training noise schedule can be interpreted as choosing a probability density over `lambda = log SNR`; concentrating probability near intermediate noise levels can improve diffusion training.
-- Chen: the best noise schedule is data/task/resolution dependent, so a fixed `lambda = 0` center should not be treated as universally optimal.
-- EDM: diffusion design choices should be separated. In later image experiments, the goal is to change the training noise distribution while keeping architecture, loss weighting, preconditioning, and sampler as controlled as possible.
-
-Phase 1 is the first sanity-check stage. It does not evaluate image generation quality or FID. It tests the mechanism in the simplest possible setting.
+Phase 1 is a mechanism check. It does not evaluate image generation quality or FID.
 
 ## 2. Phase 1 Purpose
 
 Phase 1 uses a 1D two-mode Gaussian mixture:
 
 ```text
-p(x0) = 0.5 * N(-d, sigma0^2) + 0.5 * N(d, sigma0^2)
+p(x0) = 0.5 N(-d, sigma0^2) + 0.5 N(d, sigma0^2)
 ```
 
-The purpose is to check whether the analytic separability indicator `R(sigma)` explains where denoising becomes difficult.
-
-In the EDM/VE additive-noise view:
+The forward process follows the experiment plan's VP setting:
 
 ```text
-x_sigma = x0 + sigma * epsilon
+x_lambda = alpha_lambda x0 + sigma_lambda epsilon
 epsilon ~ N(0, 1)
+alpha_lambda^2 = exp(lambda) / (1 + exp(lambda))
+sigma_lambda^2 = 1 / (1 + exp(lambda))
+lambda = log SNR
 ```
 
-For the 1D Gaussian mixture:
+For this toy distribution:
 
 ```text
-R_EDM(sigma) = 2d / sqrt(sigma0^2 + sigma^2)
-```
+DMSR_VP(lambda)
+  = 2 alpha_lambda d / sqrt(alpha_lambda^2 sigma0^2 + sigma_lambda^2)
+  = 2d exp(lambda / 2) / sqrt(1 + sigma0^2 exp(lambda))
 
-The transition region is defined by the slope magnitude with respect to `log sigma`:
+|dDMSR / dlambda|
+  = d exp(lambda / 2) / (1 + sigma0^2 exp(lambda))^(3/2)
 
-```text
-|dR / dlog(sigma)| = 2d * sigma^2 / (sigma0^2 + sigma^2)^(3/2)
-```
-
-The transition center is the maximum of this slope:
-
-```text
-sigma_R* = sqrt(2) * sigma0
+lambda_R* = -log(sigma0^2)
 ```
 
 The transition region is:
 
 ```text
-T_R = {sigma : |dR/dlog(sigma)| >= rho * max_sigma |dR/dlog(sigma)|}
+T_R = {lambda : |dDMSR/dlambda| >= rho * max_lambda |dDMSR/dlambda|}
 ```
 
-The default threshold is:
-
-```text
-rho = 0.5
-```
+The default threshold is `rho = 0.5`.
 
 ## 3. What The Code Implements
 
@@ -75,152 +61,70 @@ Main file:
 phase1/phase1_toy_experiment.py
 ```
 
-This is intentionally self-contained. It implements:
+It implements:
 
 1. sampling from the 1D Gaussian mixture,
-2. analytic `R_EDM(sigma)` and transition-region computation,
-3. several training noise distributions,
-4. a small MLP denoiser,
-5. per-sigma denoising evaluation,
-6. mode classification error from predicted clean signal,
-7. transition coverage metrics,
-8. CSV, Markdown, and PNG result outputs.
+2. analytic `DMSR_VP(lambda)` and transition-region computation,
+3. schedule samplers in lambda space,
+4. a small MLP epsilon-prediction denoiser,
+5. per-lambda epsilon MSE evaluation,
+6. Bayes-optimal epsilon prediction for reference,
+7. mode classification error from reconstructed `pred_x0`,
+8. transition coverage metrics `M` and `S`,
+9. CSV, Markdown, and PNG result outputs.
 
 The model input is:
 
 ```text
-(x_sigma, sigma)
+(x_lambda, lambda)
 ```
 
 The prediction target is:
 
 ```text
-x0
+epsilon
 ```
 
 The training loss is:
 
 ```text
-MSE(pred_x0, x0)
+MSE(pred_epsilon, epsilon)
 ```
 
-This choice is acceptable for Phase 1 because the purpose is not to reproduce full EDM preconditioning, but to compare which training noise distributions help a fixed denoising model at different noise levels.
+Loss weighting is fixed across schedules. The independent variable is only `p_train(lambda)`.
 
-For fairer schedule comparison, the current implementation resets the random seed before training each schedule for a given seed index. This makes the MLP initialization identical across schedules for that seed. Multiple seeds can be requested with `--num-seeds`.
+## 4. Compared Training Noise Distributions
 
-## 4. Bayes-Optimal Reference Denoiser
+- `cosine_vp`: VP cosine schedule induced distribution over lambda.
+- `linear_gamma`: Chen-style `gamma(t)=1-t` baseline.
+- `hang_laplace_lambda_b0.5`: Hang-style `lambda ~ Laplace(0, 0.5)`.
+- `dmsr_normal_wide_s1.5`: DMSR-centered `N(lambda_R*, 1.5^2)`.
+- `dmsr_normal_mid_s0.8`: DMSR-centered `N(lambda_R*, 0.8^2)`.
+- `dmsr_normal_narrow_s0.3`: DMSR-centered `N(lambda_R*, 0.3^2)`.
+- `dmsr_laplace_b0.5`: Laplace distribution centered at `lambda_R*`.
 
-Because this is a 1D Gaussian mixture, the Bayes-optimal denoiser is analytic. The code uses it as a reference line to separate irreducible denoising difficulty from learned-model suboptimality.
+The key comparison is whether schedules that cover `T_R` improve denoising in that region without becoming too narrow to learn the full denoising range.
 
-For `sigma0 > 0`, the posterior mean includes both mode posterior mixing and within-mode Gaussian shrinkage:
-
-```text
-v = sigma0^2 + sigma^2
-E[mode_mean | x_sigma, sigma] = d * tanh(d * x_sigma / v)
-E[x0 | x_sigma, sigma]
-  = (sigma0^2 / v) * x_sigma
-    + (1 - sigma0^2 / v) * d * tanh(d * x_sigma / v)
-```
-
-This is more complete than the simplified expression:
-
-```text
-d * tanh(d * x_sigma / (sigma0^2 + sigma^2))
-```
-
-The simplified expression estimates the posterior mode center; the experiment target is the original clean sample `x0`, so the shrinkage term matters when `sigma0 > 0`.
-
-## 5. Compared Training Noise Distributions
-
-The code compares the following schedule families through one shared interface:
-
-```text
-sample_schedule(spec, n, config, device)
-```
-
-Schedules:
-
-- `cosine_vp_as_ve`
-  - Cosine VP-style schedule mapped into VE sigma using `sigma ~= exp(-lambda/2)`.
-  - This is an approximate bridge between VP logSNR and EDM/VE sigma space.
-
-- `linear_gamma_as_ve`
-  - Chen-style simple linear signal schedule `gamma(t) = 1 - t`.
-  - Converted to VE-like sigma by `sigma = sqrt((1 - gamma) / gamma)`.
-
-- `hang_laplace_lambda_b0.5`
-  - Hang-style midpoint-focused schedule.
-  - Samples `lambda ~ Laplace(0, 0.5)` and maps by `sigma ~= exp(-lambda/2)`.
-
-- `edm_lognormal`
-  - EDM baseline.
-  - Samples `log sigma ~ N(-1.2, 1.2^2)`.
-
-- `r_normal_wide`
-  - R-matched normal distribution centered at `log(sigma_R*)`, with wide scale.
-
-- `r_normal_mid`
-  - R-matched normal distribution centered at `log(sigma_R*)`, with moderate scale.
-
-- `r_normal_narrow`
-  - R-matched normal distribution centered at `log(sigma_R*)`, with narrow scale.
-
-- `r_laplace_mid`
-  - R-matched Laplace distribution centered at `log(sigma_R*)`.
-
-The important conceptual comparison is not just which schedule has the lowest average MSE. The key comparison is whether schedules that cover the `R`-transition region improve denoising in that region without becoming too narrow to learn the full denoising range.
-
-## 6. Evaluation Metrics
-
-For each trained schedule, the code evaluates on a fixed log-spaced sigma grid.
+## 5. Evaluation Metrics
 
 Saved metrics include:
 
-- `mean_mse`
-  - Mean denoising MSE over the full sigma grid.
-
-- `transition_mse`
-  - Mean denoising MSE restricted to the `R`-transition region.
-
-- `transition_bayes_mse`
-  - Bayes-optimal denoising MSE restricted to the `R`-transition region.
-  - This is the irreducible error for this toy distribution.
-
-- `transition_excess_mse`
-  - MSE between the learned MLP prediction and the Bayes-optimal denoiser inside the transition region.
-  - This is the most important Phase 1 metric after adding the Bayes reference.
-
-- `low_noise_mse`
-  - Mean MSE below the transition region.
-
-- `high_noise_mse`
-  - Mean MSE above the transition region.
-
-- `mean_mode_error`
-  - Mode classification error using `pred_x0 >= 0`.
-
-- `transition_mode_error`
-  - Mode classification error inside the transition region.
-
-- `coverage_m`
-  - The probability that the training schedule samples sigma inside `T_R`.
-
-```text
-M = P_{sigma ~ p_train}(sigma in T_R)
-```
-
-- `expected_s_norm`
-  - Expected R-slope under the training distribution, normalized by the maximum slope.
-
-```text
-S = E_{sigma ~ p_train}[|dR/dlog(sigma)|]
-```
+- `mean_mse`: mean epsilon-prediction MSE over the full lambda grid.
+- `transition_mse`: epsilon-prediction MSE restricted to `T_R`.
+- `transition_bayes_mse`: Bayes-optimal epsilon-prediction MSE in `T_R`.
+- `transition_excess_mse`: MSE between learned epsilon prediction and Bayes-optimal epsilon prediction in `T_R`.
+- `low_noise_mse`: mean MSE where lambda is above the transition region.
+- `high_noise_mse`: mean MSE where lambda is below the transition region.
+- `mean_mode_error`: mode classification error using reconstructed `pred_x0 >= 0`.
+- `transition_mode_error`: mode error inside `T_R`.
+- `coverage_m`: probability that `p_train(lambda)` samples inside `T_R`.
+- `expected_s_norm`: expected DMSR slope under `p_train(lambda)`, normalized by the maximum slope.
 
 Important interpretation note:
 
-`coverage_m` is not expected to be monotonically correlated with better performance. A schedule can put nearly all mass inside the transition region and still perform poorly if it neglects the broader denoising range. The intended claim is about adequate transition coverage with enough full-range support, not “more transition mass is always better.”
+`coverage_m` is not expected to be monotonically correlated with better performance. A schedule can put nearly all mass inside the transition region and still perform poorly if it neglects the broader denoising range.
 
-## 7. Output Structure
+## 6. Output Structure
 
 Each run writes results to:
 
@@ -235,82 +139,23 @@ config.json
 schedules.json
 train_history.json
 metrics_summary.csv
-per_sigma_metrics.csv
+per_lambda_metrics.csv
 summary.md
-plots/r_profile.png
+plots/dmsr_profile.png
 plots/schedule_densities.png
-plots/per_sigma_mse.png
-plots/per_sigma_bayes_mse.png
-plots/per_sigma_excess_mse.png
-plots/per_sigma_mode_error.png
+plots/per_lambda_mse.png
+plots/per_lambda_bayes_mse.png
+plots/per_lambda_excess_mse.png
+plots/per_lambda_mode_error.png
 plots/coverage_vs_transition_mse.png
 ```
 
-The most useful first files to inspect are:
+## 7. Sanity Checklist
 
-```text
-summary.md
-metrics_summary.csv
-plots/r_profile.png
-plots/per_sigma_mse.png
-plots/per_sigma_excess_mse.png
-plots/coverage_vs_transition_mse.png
-```
-
-## 8. How To Run
-
-Default run:
-
-```bash
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py
-```
-
-Fast smoke test:
-
-```bash
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --train-steps 100 --batch-size 128 --eval-batch-size 512
-```
-
-Other toy settings from the experiment plan:
-
-```bash
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --d 1.5 --sigma0 0.7
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --d 1.0 --sigma0 0.8
-```
-
-Multiple seeds:
-
-```bash
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --num-seeds 3
-```
-
-## 9. What To Check In A Code Review
-
-Please check the code against the Phase 1 purpose:
-
-- Does the experiment truly isolate training noise distribution as the changed variable?
-- Are all schedules trained with the same MLP, optimizer, batch size, training steps, and evaluation grid?
-- For a fixed seed index, are all schedule models initialized from the same seed?
-- Is the R-transition region computed from `|dR/dlog(sigma)|`, not from `R(sigma)` itself?
-- Is `sigma_R* = sqrt(2) * sigma0` used as the analytic center for this toy EDM/VE setting?
-- Is the Bayes-optimal denoiser used to report `transition_excess_mse`?
-- Are schedule densities plotted in `log sigma` space?
-- Is `transition_excess_mse` emphasized as the key Phase 1 result rather than FID?
-- Are too-narrow schedules interpreted carefully as possible failures of full trajectory coverage?
-- Are VP/logSNR schedules clearly marked as approximate mappings into VE sigma space?
-
-## 10. Known Scope Limits
-
-This Phase 1 code intentionally does not implement:
-
-- image datasets,
-- MNIST or CIFAR,
-- FID,
-- a U-Net,
-- EDM preconditioning,
-- EDM Heun sampling,
-- feature-space empirical `R_phi(sigma)`.
-
-Those belong to later phases.
-
-Phase 1 is a toy mechanism test. Its job is to validate whether the `R`-transition idea is meaningful enough to motivate Phase 2 and Phase 3.
+- Is the forward process VP, not VE additive noise?
+- Is the model predicting epsilon, not x0?
+- Is `lambda_R* = -log(sigma0^2)` used as the analytic toy center?
+- Is `T_R` computed from `|dDMSR/dlambda|`, not from DMSR itself?
+- Are schedule densities plotted in lambda space?
+- Are all schedules compared with the same model, optimizer, steps, batch size, and loss weighting?
+- Are results interpreted as a mechanism check, not a FID claim?

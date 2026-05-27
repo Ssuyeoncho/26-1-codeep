@@ -1,20 +1,38 @@
-# Phase 1: 1D Gaussian Mixture Toy Experiment
+# Phase 1: VP DMSR Toy Experiment
 
-이 단계의 목적은 이미지 생성 성능을 바로 비교하는 것이 아니라, `R(sigma)`가 mode separability를 설명하고 `R`이 빠르게 변하는 transition region이 denoising 난이도와 연결되는지 확인하는 것입니다.
+이 단계의 목적은 이미지 생성 성능이나 FID를 비교하는 것이 아니라, 1D two-mode Gaussian mixture에서 DMSR 지표가 noise level에 따른 class/mode separability 변화를 올바르게 잡는지 확인하는 것입니다.
+
+계획서 기준에 맞춰 Phase 1은 VP forward process와 epsilon-prediction을 사용합니다.
+
+```text
+p(x0) = 0.5 N(-d, sigma0^2) + 0.5 N(d, sigma0^2)
+x_lambda = alpha_lambda x0 + sigma_lambda epsilon
+alpha_lambda^2 = exp(lambda) / (1 + exp(lambda))
+sigma_lambda^2 = 1 / (1 + exp(lambda))
+```
+
+해석적 DMSR은 다음과 같습니다.
+
+```text
+DMSR_VP(lambda) = 2 alpha_lambda d / sqrt(alpha_lambda^2 sigma0^2 + sigma_lambda^2)
+lambda_R* = -log(sigma0^2)
+```
 
 ## 실행
+
+계획서 기본 반복 수:
 
 ```bash
 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py
 ```
 
-빠른 확인용:
+빠른 smoke test:
 
 ```bash
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --train-steps 100 --batch-size 128 --eval-batch-size 512
+/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --train-steps 20 --batch-size 64 --eval-batch-size 128 --eval-grid-size 12
 ```
 
-문서의 다른 toy 파라미터는 다음처럼 실행합니다.
+문서의 다른 toy 파라미터:
 
 ```bash
 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --d 1.5 --sigma0 0.7
@@ -28,35 +46,30 @@
 - `config.json`: 실험 하이퍼파라미터
 - `schedules.json`: 비교한 training noise distribution 정의
 - `metrics_summary.csv`: schedule별 요약 지표
-- `per_sigma_metrics.csv`: sigma grid별 denoising MSE, Bayes-optimal MSE, excess MSE, mode error
+- `per_lambda_metrics.csv`: lambda grid별 epsilon MSE, Bayes-optimal epsilon MSE, excess MSE, mode error
 - `summary.md`: 결과를 바로 읽을 수 있는 Markdown 보고서
-- `plots/r_profile.png`: analytic `R(sigma)`와 transition region
-- `plots/schedule_densities.png`: schedule별 `log sigma` density
-- `plots/per_sigma_mse.png`: sigma별 denoising MSE
-- `plots/per_sigma_bayes_mse.png`: sigma별 Bayes-optimal denoising MSE
-- `plots/per_sigma_excess_mse.png`: 학습된 MLP와 Bayes-optimal denoiser 사이의 excess MSE
-- `plots/per_sigma_mode_error.png`: sigma별 mode classification error
-- `plots/coverage_vs_transition_mse.png`: transition mass `M`과 transition excess MSE 관계. 색은 전체 sigma 범위의 mean MSE
+- `plots/dmsr_profile.png`: analytic `DMSR_VP(lambda)`와 transition region
+- `plots/schedule_densities.png`: schedule별 `lambda` density
+- `plots/per_lambda_mse.png`: lambda별 epsilon-prediction MSE
+- `plots/per_lambda_bayes_mse.png`: lambda별 Bayes-optimal epsilon MSE
+- `plots/per_lambda_excess_mse.png`: 학습된 MLP와 Bayes-optimal epsilon predictor 사이의 excess MSE
+- `plots/per_lambda_mode_error.png`: predicted x0 기준 mode classification error
+- `plots/coverage_vs_transition_mse.png`: transition mass `M`과 transition excess MSE 관계. 색은 전체 lambda 범위의 mean MSE
 
 ## 비교 Schedule
 
-- `cosine_vp_as_ve`: cosine VP schedule을 `sigma ~= exp(-lambda/2)`로 VE/EDM 관점에 매핑
-- `linear_gamma_as_ve`: Chen의 `gamma(t)=1-t` baseline을 VE sigma로 매핑
+- `cosine_vp`: VP cosine schedule이 유도하는 lambda 분포
+- `linear_gamma`: Chen의 `gamma(t)=1-t` baseline
 - `hang_laplace_lambda_b0.5`: Hang-style `lambda ~ Laplace(0, 0.5)`
-- `edm_lognormal`: EDM baseline `log sigma ~ N(-1.2, 1.2^2)`
-- `r_normal_wide/mid/narrow`: `log sigma_R*` 중심의 normal 분포, 폭만 변경. 여기서 analytic toy 기준 `sigma_R* = sqrt(2) * sigma0`
-- `r_laplace_mid`: `log sigma_R*` 중심의 Laplace 분포
+- `dmsr_normal_wide_s1.5`: `lambda_R*` 중심 normal, s=1.5
+- `dmsr_normal_mid_s0.8`: `lambda_R*` 중심 normal, s=0.8
+- `dmsr_normal_narrow_s0.3`: `lambda_R*` 중심 normal, s=0.3
+- `dmsr_laplace_b0.5`: Hang의 Laplace 형태를 `lambda_R*` 중심으로 이동
 
 ## 해석
 
-Phase 1에서 가장 보고 싶은 신호는 `R`-transition region을 적절히 덮는 schedule이 transition excess MSE를 낮추는지입니다. 여기서 excess MSE는 학습된 MLP가 analytic Bayes-optimal denoiser에서 얼마나 떨어져 있는지를 뜻합니다.
+Phase 1에서 보고 싶은 신호는 `DMSR` 변화율이 큰 transition region을 적절히 덮는 schedule이 그 구간의 excess MSE를 낮추는지입니다. 여기서 excess MSE는 학습된 MLP의 epsilon 예측이 analytic Bayes-optimal epsilon predictor에서 얼마나 떨어져 있는지를 뜻합니다.
 
-주의할 점은 `coverage_m`이 높을수록 무조건 좋다는 주장이 아니라는 것입니다. 너무 좁게 transition region에만 몰린 schedule은 전체 denoising range를 못 배워 mean MSE가 나빠질 수 있습니다. 따라서 핵심 해석은 “충분한 transition coverage와 full-range support 사이의 균형”입니다.
+`coverage_m`이 높을수록 무조건 좋다는 주장은 아닙니다. 너무 좁게 transition region에만 몰린 schedule은 전체 denoising trajectory를 못 배워 transition 밖의 MSE가 커질 수 있습니다. 따라서 핵심 해석은 “충분한 transition coverage와 full-range support 사이의 균형”입니다.
 
-공정한 비교를 위해 같은 seed index에서는 각 schedule 훈련 직전에 동일 seed로 모델을 초기화합니다. 여러 seed를 돌리고 싶으면 `--num-seeds`를 사용합니다.
-
-```bash
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --num-seeds 3
-```
-
-이 단계는 FID를 주장하지 않으며, Phase 2 MNIST와 Phase 3 CIFAR에서 사용할 schedule 설계 근거를 만드는 역할입니다.
+이 단계는 FID를 주장하지 않으며, Phase 2 MNIST와 Phase 3 CIFAR에서 사용할 empirical DMSR 계산 및 schedule 설계 근거를 만드는 역할입니다.

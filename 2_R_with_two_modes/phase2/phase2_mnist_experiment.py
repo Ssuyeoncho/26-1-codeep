@@ -118,6 +118,16 @@ class ScheduleSpec:
 # Utilities
 # ──────────────────────────────────────────────────────────────────────────────
 
+def resolve_device(device_str: str) -> str:
+    if device_str != "auto":
+        return device_str
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -1056,7 +1066,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval-grid-size",  type=int,   default=40)
     p.add_argument("--seed",            type=int,   default=20260526)
     p.add_argument("--num-seeds",       type=int,   default=1)
-    p.add_argument("--device",          type=str,   default="cpu")
+    p.add_argument("--device",          type=str,   default="auto",
+                   help="Device to use: 'auto' (default), 'cuda', 'mps', or 'cpu'.")
     p.add_argument("--ddim-steps",      type=int,   default=50)
     p.add_argument("--n-generate",      type=int,   default=5000)
     p.add_argument("--gen-batch-size",  type=int,   default=100)
@@ -1067,6 +1078,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    device = resolve_device(args.device)
+    print(f"[Phase 2] Using device: {device}")
     config = ExperimentConfig(
         digits=tuple(args.digits),
         lambda_min=args.lambda_min,
@@ -1081,7 +1094,7 @@ def main() -> None:
         eval_grid_size=args.eval_grid_size,
         seed=args.seed,
         num_seeds=args.num_seeds,
-        device=args.device,
+        device=device,
         ddim_steps=args.ddim_steps,
         n_generate=args.n_generate,
         gen_batch_size=args.gen_batch_size,

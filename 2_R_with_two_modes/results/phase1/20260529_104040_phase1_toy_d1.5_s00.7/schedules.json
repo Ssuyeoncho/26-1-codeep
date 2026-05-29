@@ -7,13 +7,6 @@
     "note": "Cosine VP schedule induced density over lambda."
   },
   {
-    "name": "linear_gamma",
-    "kind": "linear_gamma",
-    "center_lambda": null,
-    "scale": null,
-    "note": "Chen-style gamma(t)=1-t baseline in VP lambda space."
-  },
-  {
     "name": "hang_laplace_lambda_b0.5",
     "kind": "hang_laplace_lambda",
     "center_lambda": null,
@@ -23,28 +16,28 @@
   {
     "name": "dmsr_normal_wide_s1.5",
     "kind": "dmsr_normal",
-    "center_lambda": 0.6931471805599453,
+    "center_lambda": 0.02020270731751958,
     "scale": 1.5,
     "note": "DMSR-centered normal, wide s=1.5."
   },
   {
     "name": "dmsr_normal_mid_s0.8",
     "kind": "dmsr_normal",
-    "center_lambda": 0.6931471805599453,
+    "center_lambda": 0.02020270731751958,
     "scale": 0.8,
     "note": "DMSR-centered normal, middle s=0.8."
   },
   {
     "name": "dmsr_normal_narrow_s0.3",
     "kind": "dmsr_normal",
-    "center_lambda": 0.6931471805599453,
+    "center_lambda": 0.02020270731751958,
     "scale": 0.3,
     "note": "DMSR-centered normal, narrow s=0.3."
   },
   {
     "name": "dmsr_laplace_b0.5",
     "kind": "dmsr_laplace",
-    "center_lambda": 0.6931471805599453,
+    "center_lambda": 0.02020270731751958,
     "scale": 0.5,
     "note": "Hang-style Laplace shifted to lambda_R*."
   }

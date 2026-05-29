@@ -96,12 +96,14 @@ Loss weighting is fixed across schedules. The independent variable is only `p_tr
 ## 4. Compared Training Noise Distributions
 
 - `cosine_vp`: VP cosine schedule induced distribution over lambda.
-- `linear_gamma`: Chen-style `gamma(t)=1-t` baseline.
 - `hang_laplace_lambda_b0.5`: Hang-style `lambda ~ Laplace(0, 0.5)`.
 - `dmsr_normal_wide_s1.5`: DMSR-centered `N(lambda_R*, 1.5^2)`.
 - `dmsr_normal_mid_s0.8`: DMSR-centered `N(lambda_R*, 0.8^2)`.
 - `dmsr_normal_narrow_s0.3`: DMSR-centered `N(lambda_R*, 0.3^2)`.
 - `dmsr_laplace_b0.5`: Laplace distribution centered at `lambda_R*`.
+
+`linear_gamma` is available as an optional diagnostic baseline through
+`--include-linear-gamma`, but it is not part of the default plan comparison.
 
 The key comparison is whether schedules that cover `T_R` improve denoising in that region without becoming too narrow to learn the full denoising range.
 
@@ -129,7 +131,7 @@ Important interpretation note:
 Each run writes results to:
 
 ```text
-results/phase1/<timestamp>_phase1_toy_d<d>_s0<sigma0>/
+2_R_with_two_modes/results/phase1/<timestamp>_phase1_toy_d<d>_s0<sigma0>/
 ```
 
 Important files:
@@ -150,7 +152,27 @@ plots/per_lambda_mode_error.png
 plots/coverage_vs_transition_mse.png
 ```
 
-## 7. Sanity Checklist
+## 7. Recommended Commands
+
+Fast smoke test:
+
+```text
+/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset smoke
+```
+
+Full default run:
+
+```text
+/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset full
+```
+
+Run all planned toy parameter settings:
+
+```text
+/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset full --toy-params plan
+```
+
+## 8. Sanity Checklist
 
 - Is the forward process VP, not VE additive noise?
 - Is the model predicting epsilon, not x0?

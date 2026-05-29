@@ -42,6 +42,9 @@ import torch.nn.functional as F
 
 
 Tensor = torch.Tensor
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_OUT_ROOT = PROJECT_DIR / "results"
+PLAN_TOY_PARAMS = ((2.0, 0.5), (1.5, 0.7), (1.0, 0.8))
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,7 @@ class ExperimentConfig:
     num_seeds: int = 1
     device: str = "cpu"
     run_name: str = "phase1_toy"
+    include_linear_gamma: bool = False
 
 
 @dataclass(frozen=True)
@@ -154,6 +158,8 @@ def transition_bounds(config: ExperimentConfig) -> tuple[float, float, float]:
     grid = np.linspace(config.lambda_min, config.lambda_max, 4000)
     slope = dmsr_slope_abs(grid, config.d, config.sigma0)
     mask = slope >= config.rho * slope.max()
+    if not np.any(mask):
+        raise ValueError("Transition region is empty. Lower rho or widen the lambda range.")
     return float(grid[mask][0]), float(-math.log(2.0 * config.sigma0**2)), float(grid[mask][-1])
 
 
@@ -194,15 +200,17 @@ def sample_schedule(spec: ScheduleSpec, n: int, config: ExperimentConfig, device
 
 def build_schedules(config: ExperimentConfig) -> list[ScheduleSpec]:
     center = -math.log(2.0 * config.sigma0**2)
-    return [
+    specs = [
         ScheduleSpec("cosine_vp", "cosine_vp", note="Cosine VP schedule induced density over lambda."),
-        ScheduleSpec("linear_gamma", "linear_gamma", note="Chen-style gamma(t)=1-t baseline in VP lambda space."),
         ScheduleSpec("hang_laplace_lambda_b0.5", "hang_laplace_lambda", scale=0.5, note="Hang-style Laplace around lambda=0."),
         ScheduleSpec("dmsr_normal_wide_s1.5", "dmsr_normal", center_lambda=center, scale=1.5, note="DMSR-centered normal, wide s=1.5."),
         ScheduleSpec("dmsr_normal_mid_s0.8", "dmsr_normal", center_lambda=center, scale=0.8, note="DMSR-centered normal, middle s=0.8."),
         ScheduleSpec("dmsr_normal_narrow_s0.3", "dmsr_normal", center_lambda=center, scale=0.3, note="DMSR-centered normal, narrow s=0.3."),
         ScheduleSpec("dmsr_laplace_b0.5", "dmsr_laplace", center_lambda=center, scale=0.5, note="Hang-style Laplace shifted to lambda_R*."),
     ]
+    if config.include_linear_gamma:
+        specs.insert(1, ScheduleSpec("linear_gamma", "linear_gamma", note="Chen-style gamma(t)=1-t optional baseline in VP lambda space."))
+    return specs
 
 
 def train_one_schedule(spec: ScheduleSpec, config: ExperimentConfig, run_seed: int) -> tuple[MLPDenoiser, list[dict[str, float]]]:
@@ -438,6 +446,7 @@ def save_summary_md(config: ExperimentConfig, specs: list[ScheduleSpec], rows: l
         f"- train steps per schedule: {config.train_steps}",
         f"- batch size: {config.batch_size}",
         f"- seeds per schedule: {config.num_seeds}",
+        f"- optional linear gamma baseline: {config.include_linear_gamma}",
         "",
         "## Schedules",
         "",
@@ -513,41 +522,84 @@ def run(config: ExperimentConfig, out_root: Path) -> Path:
     return out_dir
 
 
+def preset_defaults(preset: str) -> dict[str, int]:
+    if preset == "smoke":
+        return {
+            "train_steps": 20,
+            "batch_size": 64,
+            "eval_batch_size": 128,
+            "eval_grid_size": 12,
+            "num_seeds": 1,
+        }
+    if preset == "full":
+        return {
+            "train_steps": 10000,
+            "batch_size": 512,
+            "eval_batch_size": 4096,
+            "eval_grid_size": 80,
+            "num_seeds": 1,
+        }
+    raise ValueError(f"Unknown preset: {preset}")
+
+
+def value_or_default(value: int | None, defaults: dict[str, int], key: str) -> int:
+    return defaults[key] if value is None else value
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Phase 1 VP DMSR-transition toy experiment.")
+    parser.add_argument("--preset", choices=["smoke", "full"], default="full", help="Named runtime preset. Explicit numeric flags override it.")
+    parser.add_argument("--toy-params", choices=["single", "plan"], default="single", help="Run one toy setting or all three plan settings.")
     parser.add_argument("--d", type=float, default=2.0)
     parser.add_argument("--sigma0", type=float, default=0.5)
     parser.add_argument("--lambda-min", type=float, default=-10.0)
     parser.add_argument("--lambda-max", type=float, default=10.0)
     parser.add_argument("--rho", type=float, default=0.5)
-    parser.add_argument("--train-steps", type=int, default=10000)
-    parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--eval-batch-size", type=int, default=4096)
-    parser.add_argument("--eval-grid-size", type=int, default=80)
+    parser.add_argument("--train-steps", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--eval-batch-size", type=int, default=None)
+    parser.add_argument("--eval-grid-size", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=2e-3)
+    parser.add_argument("--hidden-dim", type=int, default=96)
+    parser.add_argument("--depth", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20260526)
-    parser.add_argument("--num-seeds", type=int, default=1)
+    parser.add_argument("--num-seeds", type=int, default=None)
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--out-root", type=Path, default=Path("results"))
+    parser.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
+    parser.add_argument("--include-linear-gamma", action="store_true", help="Also train Chen-style gamma(t)=1-t optional baseline.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    config = ExperimentConfig(
-        d=args.d,
-        sigma0=args.sigma0,
-        lambda_min=args.lambda_min,
-        lambda_max=args.lambda_max,
-        rho=args.rho,
-        train_steps=args.train_steps,
-        batch_size=args.batch_size,
-        eval_batch_size=args.eval_batch_size,
-        eval_grid_size=args.eval_grid_size,
-        seed=args.seed,
-        num_seeds=args.num_seeds,
-        device=args.device,
-    )
-    run(config, args.out_root)
+    defaults = preset_defaults(args.preset)
+    toy_params = PLAN_TOY_PARAMS if args.toy_params == "plan" else ((args.d, args.sigma0),)
+    completed: list[Path] = []
+    for d, sigma0 in toy_params:
+        config = ExperimentConfig(
+            d=d,
+            sigma0=sigma0,
+            lambda_min=args.lambda_min,
+            lambda_max=args.lambda_max,
+            rho=args.rho,
+            train_steps=value_or_default(args.train_steps, defaults, "train_steps"),
+            batch_size=value_or_default(args.batch_size, defaults, "batch_size"),
+            eval_batch_size=value_or_default(args.eval_batch_size, defaults, "eval_batch_size"),
+            eval_grid_size=value_or_default(args.eval_grid_size, defaults, "eval_grid_size"),
+            lr=args.lr,
+            hidden_dim=args.hidden_dim,
+            depth=args.depth,
+            seed=args.seed,
+            num_seeds=value_or_default(args.num_seeds, defaults, "num_seeds"),
+            device=args.device,
+            include_linear_gamma=args.include_linear_gamma,
+        )
+        completed.append(run(config, args.out_root))
+
+    if len(completed) > 1:
+        print("[Phase 1] completed toy-parameter sweep:")
+        for path in completed:
+            print(f"  - {path}")
 
 
 if __name__ == "__main__":

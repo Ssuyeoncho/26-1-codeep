@@ -20,28 +20,29 @@ lambda_R* = -log(2 sigma0^2)
 
 ## 실행
 
-계획서 기본 반복 수:
-
-```bash
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py
-```
-
 빠른 smoke test:
 
 ```bash
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --train-steps 20 --batch-size 64 --eval-batch-size 128 --eval-grid-size 12
+/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset smoke
 ```
 
-문서의 다른 toy 파라미터:
+계획서 기본 반복 수:
 
 ```bash
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --d 1.5 --sigma0 0.7
-/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --d 1.0 --sigma0 0.8
+/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset full
 ```
+
+문서의 세 toy 파라미터를 모두 실행:
+
+```bash
+/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset full --toy-params plan
+```
+
+기본 결과 위치는 실행 위치와 무관하게 `2_R_with_two_modes/results/phase1/`입니다.
 
 ## 저장 구조
 
-실행 결과는 `results/phase1/<run_id>/` 아래에 저장됩니다.
+실행 결과는 `2_R_with_two_modes/results/phase1/<run_id>/` 아래에 저장됩니다.
 
 - `config.json`: 실험 하이퍼파라미터
 - `schedules.json`: 비교한 training noise distribution 정의
@@ -59,12 +60,13 @@ lambda_R* = -log(2 sigma0^2)
 ## 비교 Schedule
 
 - `cosine_vp`: VP cosine schedule이 유도하는 lambda 분포
-- `linear_gamma`: Chen의 `gamma(t)=1-t` baseline
 - `hang_laplace_lambda_b0.5`: Hang-style `lambda ~ Laplace(0, 0.5)`
 - `dmsr_normal_wide_s1.5`: `lambda_R*` 중심 normal, s=1.5
 - `dmsr_normal_mid_s0.8`: `lambda_R*` 중심 normal, s=0.8
 - `dmsr_normal_narrow_s0.3`: `lambda_R*` 중심 normal, s=0.3
 - `dmsr_laplace_b0.5`: Hang의 Laplace 형태를 `lambda_R*` 중심으로 이동
+
+`linear_gamma`는 문서의 핵심 비교군은 아니므로 기본 실행에서는 제외합니다. 필요하면 `--include-linear-gamma`로 추가합니다.
 
 ## 해석
 

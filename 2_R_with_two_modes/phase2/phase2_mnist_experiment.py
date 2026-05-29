@@ -488,7 +488,7 @@ def train_one_schedule(
         idx = torch.randint(0, n_train, (config.batch_size,))
         x0  = train_imgs[idx].to(config.device)
         lam = sample_schedule(spec, config.batch_size, config, config.device)  # (B,1)
-        alpha, sigma = vp_alpha_sigma(lam)
+        alpha, sigma = vp_alpha_sigma(lam.view(-1, 1, 1, 1))
         eps  = torch.randn_like(x0)
         x_lam = alpha * x0 + sigma * eps
         pred_eps = model(x_lam, lam.view(-1))

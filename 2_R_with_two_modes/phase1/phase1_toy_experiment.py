@@ -184,6 +184,9 @@ def sample_schedule(spec: ScheduleSpec, n: int, config: ExperimentConfig, device
         lam = torch.distributions.Laplace(0.0, b).sample((n, 1)).to(device)
         return clamp_lambda(lam, config)
 
+    if spec.kind == "uniform_lambda":
+        return config.lambda_min + (config.lambda_max - config.lambda_min) * torch.rand(n, 1, device=device)
+
     if spec.kind == "cosine_vp":
         t = torch.rand(n, 1, device=device).clamp(eps, 1.0 - eps)
         lam = -2.0 * torch.log(torch.tan(0.5 * math.pi * t))
@@ -202,6 +205,7 @@ def build_schedules(config: ExperimentConfig) -> list[ScheduleSpec]:
     center = -math.log(2.0 * config.sigma0**2)
     specs = [
         ScheduleSpec("cosine_vp", "cosine_vp", note="Cosine VP schedule induced density over lambda."),
+        ScheduleSpec("uniform_lambda", "uniform_lambda", note="Flat broad baseline over the full lambda range."),
         ScheduleSpec("hang_laplace_lambda_b0.5", "hang_laplace_lambda", scale=0.5, note="Hang-style Laplace around lambda=0."),
         ScheduleSpec("dmsr_normal_wide_s1.5", "dmsr_normal", center_lambda=center, scale=1.5, note="DMSR-centered normal, wide s=1.5."),
         ScheduleSpec("dmsr_normal_mid_s0.8", "dmsr_normal", center_lambda=center, scale=0.8, note="DMSR-centered normal, middle s=0.8."),
@@ -330,6 +334,45 @@ def save_metrics_csv(rows: list[dict[str, float | str]], path: Path) -> None:
             writer.writerow({key: row[key] for key in keys})
 
 
+def aggregate_summary_rows(rows: list[dict[str, float | str]]) -> list[dict[str, float | str | int]]:
+    metric_keys = [
+        "coverage_m",
+        "expected_s_norm",
+        "mean_mse",
+        "mean_bayes_mse",
+        "mean_excess_mse",
+        "transition_mse",
+        "transition_bayes_mse",
+        "transition_excess_mse",
+        "low_noise_mse",
+        "high_noise_mse",
+        "mean_mode_error",
+        "transition_mode_error",
+    ]
+    schedules = sorted({str(row["schedule"]) for row in rows})
+    aggregated: list[dict[str, float | str | int]] = []
+    for schedule in schedules:
+        schedule_rows = [row for row in rows if row["schedule"] == schedule]
+        out: dict[str, float | str | int] = {"schedule": schedule, "num_seeds": len(schedule_rows)}
+        for key in metric_keys:
+            values = np.array([float(row[key]) for row in schedule_rows], dtype=float)
+            out[f"{key}_mean"] = float(np.mean(values))
+            out[f"{key}_std"] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+        aggregated.append(out)
+    return aggregated
+
+
+def save_aggregate_csv(rows: list[dict[str, float | str]], path: Path) -> None:
+    aggregated = aggregate_summary_rows(rows)
+    if not aggregated:
+        return
+    keys = list(aggregated[0].keys())
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(aggregated)
+
+
 def save_per_lambda_csv(results: list[dict[str, float | list[float]]], path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -428,6 +471,8 @@ def plot_coverage_tradeoff(summary_rows: list[dict[str, float | str]], out_path:
 
 def save_summary_md(config: ExperimentConfig, specs: list[ScheduleSpec], rows: list[dict[str, float | str]], out_path: Path) -> None:
     low, center, high = transition_bounds(config)
+    aggregate_rows = aggregate_summary_rows(rows)
+    sorted_aggregate_rows = sorted(aggregate_rows, key=lambda row: float(row["transition_excess_mse_mean"]))
     sorted_rows = sorted(rows, key=lambda row: float(row["transition_excess_mse"]))
     lines = [
         "# Phase 1 Toy Experiment Summary",
@@ -457,6 +502,24 @@ def save_summary_md(config: ExperimentConfig, specs: list[ScheduleSpec], rows: l
         "",
         "## Main Results",
         "",
+        "Aggregated across seeds. Standard deviations are sample std when `num_seeds > 1`.",
+        "",
+        "| rank | schedule | seeds | M coverage | S norm | transition excess MSE | mean MSE | transition mode error |",
+        "|---:|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for rank, row in enumerate(sorted_aggregate_rows, start=1):
+        lines.append(
+            f"| {rank} | {row['schedule']} | {int(row['num_seeds'])} | "
+            f"{float(row['coverage_m_mean']):.4f} +/- {float(row['coverage_m_std']):.4f} | "
+            f"{float(row['expected_s_norm_mean']):.4f} +/- {float(row['expected_s_norm_std']):.4f} | "
+            f"{float(row['transition_excess_mse_mean']):.6f} +/- {float(row['transition_excess_mse_std']):.6f} | "
+            f"{float(row['mean_mse_mean']):.6f} +/- {float(row['mean_mse_std']):.6f} | "
+            f"{float(row['transition_mode_error_mean']):.4f} +/- {float(row['transition_mode_error_std']):.4f} |"
+        )
+    lines += [
+        "",
+        "## Per-Seed Results",
+        "",
         "| rank | schedule | seed | M coverage | S norm | transition MSE | Bayes transition MSE | transition excess MSE | mean MSE | transition mode error |",
         "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
@@ -472,6 +535,7 @@ def save_summary_md(config: ExperimentConfig, specs: list[ScheduleSpec], rows: l
         "## Interpretation Guide",
         "",
         "- `transition_bayes_mse` is the irreducible epsilon-prediction error for this GMM; `transition_excess_mse` measures how far the learned MLP is from the Bayes-optimal epsilon predictor.",
+        "- `uniform_lambda` is a broad full-range baseline used to separate broad support from cosine-specific density effects.",
         "- High `M` alone is not sufficient. A schedule can put nearly all mass in the transition region and still perform poorly if it neglects the broader denoising range.",
         "- The intended claim is therefore about adequate transition coverage with enough full-range support, not monotonic improvement as `M` increases.",
         "- This is not an image-generation or FID experiment; it validates the DMSR/mode-separability mechanism before MNIST/CIFAR phases.",
@@ -510,6 +574,7 @@ def run(config: ExperimentConfig, out_root: Path) -> Path:
 
     (out_dir / "train_history.json").write_text(json.dumps(histories, indent=2), encoding="utf-8")
     save_metrics_csv(summary_rows, out_dir / "metrics_summary.csv")
+    save_aggregate_csv(summary_rows, out_dir / "metrics_aggregate.csv")
     save_per_lambda_csv(all_results, out_dir / "per_lambda_metrics.csv")
     save_summary_md(config, specs, summary_rows, out_dir / "summary.md")
     plot_per_lambda(all_results, config, "per_lambda_mse", "Epsilon-prediction MSE", plots_dir / "per_lambda_mse.png")
@@ -537,7 +602,7 @@ def preset_defaults(preset: str) -> dict[str, int]:
             "batch_size": 512,
             "eval_batch_size": 4096,
             "eval_grid_size": 80,
-            "num_seeds": 1,
+            "num_seeds": 3,
         }
     raise ValueError(f"Unknown preset: {preset}")
 

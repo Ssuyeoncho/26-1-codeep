@@ -32,10 +32,18 @@ lambda_R* = -log(2 sigma0^2)
 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset full
 ```
 
+`full` preset은 기본적으로 3 seeds를 실행해 schedule ranking의 안정성을 확인합니다.
+
 문서의 세 toy 파라미터를 모두 실행:
 
 ```bash
 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset full --toy-params plan
+```
+
+cosine VP와 DMSR-wide의 차이를 더 엄밀히 보려면 seed 수를 늘립니다.
+
+```bash
+/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset full --toy-params plan --num-seeds 5
 ```
 
 기본 결과 위치는 실행 위치와 무관하게 `2_R_with_two_modes/results/phase1/`입니다.
@@ -47,6 +55,7 @@ lambda_R* = -log(2 sigma0^2)
 - `config.json`: 실험 하이퍼파라미터
 - `schedules.json`: 비교한 training noise distribution 정의
 - `metrics_summary.csv`: schedule별 요약 지표
+- `metrics_aggregate.csv`: seed 평균/표준편차 집계 지표
 - `per_lambda_metrics.csv`: lambda grid별 epsilon MSE, Bayes-optimal epsilon MSE, excess MSE, mode error
 - `summary.md`: 결과를 바로 읽을 수 있는 Markdown 보고서
 - `plots/dmsr_profile.png`: analytic `DMSR_VP(lambda)`와 transition region
@@ -60,6 +69,7 @@ lambda_R* = -log(2 sigma0^2)
 ## 비교 Schedule
 
 - `cosine_vp`: VP cosine schedule이 유도하는 lambda 분포
+- `uniform_lambda`: 전체 lambda 범위를 균등하게 덮는 broad baseline
 - `hang_laplace_lambda_b0.5`: Hang-style `lambda ~ Laplace(0, 0.5)`
 - `dmsr_normal_wide_s1.5`: `lambda_R*` 중심 normal, s=1.5
 - `dmsr_normal_mid_s0.8`: `lambda_R*` 중심 normal, s=0.8
@@ -73,5 +83,11 @@ lambda_R* = -log(2 sigma0^2)
 Phase 1에서 보고 싶은 신호는 `DMSR` 변화율이 큰 transition region을 적절히 덮는 schedule이 그 구간의 excess MSE를 낮추는지입니다. 여기서 excess MSE는 학습된 MLP의 epsilon 예측이 analytic Bayes-optimal epsilon predictor에서 얼마나 떨어져 있는지를 뜻합니다.
 
 `coverage_m`이 높을수록 무조건 좋다는 주장은 아닙니다. 너무 좁게 transition region에만 몰린 schedule은 전체 denoising trajectory를 못 배워 transition 밖의 MSE가 커질 수 있습니다. 따라서 핵심 해석은 “충분한 transition coverage와 full-range support 사이의 균형”입니다.
+
+현재 Phase 1에서 안전하게 주장할 수 있는 것은 다음입니다.
+
+- `dmsr_normal_narrow_s0.3`처럼 T_R에 과도하게 집중하면 transition 또는 전체 denoising 성능이 불안정해질 수 있습니다.
+- `uniform_lambda`는 broad support만으로 충분한지 확인하는 반례 baseline입니다. 일부 toy 세팅에서 DMSR-targeted schedule이 uniform보다 낮은 transition excess MSE를 보이면, T_R 근방 density 자체가 도움이 된다는 partial evidence로 해석할 수 있습니다.
+- `cosine_vp`와 `dmsr_normal_wide_s1.5`의 차이는 seed 표준편차가 겹치면 우열을 주장하지 않습니다. 이 경우 “비슷하다”로 정리하고 Phase 2에서 더 큰 데이터/모델로 재검증합니다.
 
 이 단계는 FID를 주장하지 않으며, Phase 2 MNIST와 Phase 3 CIFAR에서 사용할 empirical DMSR 계산 및 schedule 설계 근거를 만드는 역할입니다.

@@ -96,6 +96,7 @@ Loss weighting is fixed across schedules. The independent variable is only `p_tr
 ## 4. Compared Training Noise Distributions
 
 - `cosine_vp`: VP cosine schedule induced distribution over lambda.
+- `uniform_lambda`: flat broad baseline over the full lambda range.
 - `hang_laplace_lambda_b0.5`: Hang-style `lambda ~ Laplace(0, 0.5)`.
 - `dmsr_normal_wide_s1.5`: DMSR-centered `N(lambda_R*, 1.5^2)`.
 - `dmsr_normal_mid_s0.8`: DMSR-centered `N(lambda_R*, 0.8^2)`.
@@ -106,6 +107,12 @@ Loss weighting is fixed across schedules. The independent variable is only `p_tr
 `--include-linear-gamma`, but it is not part of the default plan comparison.
 
 The key comparison is whether schedules that cover `T_R` improve denoising in that region without becoming too narrow to learn the full denoising range.
+
+Current Phase 1 claim boundary:
+
+- Strong claim: over-concentrating on `T_R` can hurt, especially for narrow schedules that neglect the full denoising range.
+- Moderate claim: DMSR-targeted schedules can outperform a flat `uniform_lambda` baseline in some toy settings, which suggests that broad support alone is not the whole story.
+- Do not overclaim: if `cosine_vp` and `dmsr_normal_wide_s1.5` have overlapping seed-level error bars, treat them as statistically indistinguishable in Phase 1.
 
 ## 5. Evaluation Metrics
 
@@ -121,6 +128,9 @@ Saved metrics include:
 - `transition_mode_error`: mode error inside `T_R`.
 - `coverage_m`: probability that `p_train(lambda)` samples inside `T_R`.
 - `expected_s_norm`: expected DMSR slope under `p_train(lambda)`, normalized by the maximum slope.
+
+`metrics_summary.csv` stores one row per schedule and seed.
+`metrics_aggregate.csv` stores schedule-level seed means and standard deviations.
 
 Important interpretation note:
 
@@ -141,6 +151,7 @@ config.json
 schedules.json
 train_history.json
 metrics_summary.csv
+metrics_aggregate.csv
 per_lambda_metrics.csv
 summary.md
 plots/dmsr_profile.png
@@ -166,10 +177,19 @@ Full default run:
 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset full
 ```
 
+The `full` preset uses 3 seeds by default. Override with `--num-seeds 5` when
+more stable error bars are needed.
+
 Run all planned toy parameter settings:
 
 ```text
 /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset full --toy-params plan
+```
+
+Robustness rerun for tighter error bars:
+
+```text
+/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 phase1/phase1_toy_experiment.py --preset full --toy-params plan --num-seeds 5
 ```
 
 ## 8. Sanity Checklist

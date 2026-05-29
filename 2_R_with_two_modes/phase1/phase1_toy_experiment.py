@@ -77,6 +77,14 @@ class ScheduleSpec:
     note: str = ""
 
 
+def resolve_device(device_str: str) -> str:
+    if device_str != "auto":
+        return device_str
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -629,7 +637,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20260526)
     parser.add_argument("--num-seeds", type=int, default=None)
-    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--device", type=str, default="auto",
+                        help="Device to use: 'auto' (default), 'cuda', 'mps', or 'cpu'.")
     parser.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
     parser.add_argument("--include-linear-gamma", action="store_true", help="Also train Chen-style gamma(t)=1-t optional baseline.")
     return parser.parse_args()
@@ -637,6 +646,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    device = resolve_device(args.device)
+    print(f"[Phase 1] Using device: {device}")
     defaults = preset_defaults(args.preset)
     toy_params = PLAN_TOY_PARAMS if args.toy_params == "plan" else ((args.d, args.sigma0),)
     completed: list[Path] = []
@@ -656,7 +667,7 @@ def main() -> None:
             depth=args.depth,
             seed=args.seed,
             num_seeds=value_or_default(args.num_seeds, defaults, "num_seeds"),
-            device=args.device,
+            device=device,
             include_linear_gamma=args.include_linear_gamma,
         )
         completed.append(run(config, args.out_root))

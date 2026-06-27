@@ -18,7 +18,7 @@ import torch
 from .config import CLASS_PAIRS, PRESETS, ExperimentConfig, ScheduleSpec
 from .experiment import (
     build_schedules, compute_coverage_metrics, compute_dmsr_phi, compute_fid,
-    ddim_sample, eval_classifier_confidence, eval_per_lambda_mse,
+    eval_classifier_confidence, eval_per_lambda_mse,
     generate_samples_batched, sample_schedule, train_one_schedule,
 )
 from .models import resolve_device, seed_everything, train_classifier
@@ -305,7 +305,7 @@ def run(cfg: ExperimentConfig, out_root: Path) -> Path:
             fid_val = float("nan")
             if cfg.compute_fid:
                 print("  FID...")
-                fid_val = compute_fid(model, cfg, device, cfg.n_gen_samples)
+                fid_val = compute_fid(gen_imgs, cfg, device)
 
             print("  Coverage metrics...")
             m, s = compute_coverage_metrics(spec, lambda_grid, slope, t_low, t_high, cfg, device)

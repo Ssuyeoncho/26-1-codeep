@@ -269,8 +269,13 @@ def compute_coverage_metrics(
 
 
 def compute_fid(
-    model: UNet, cfg: ExperimentConfig, device: str, n_fake: int
+    gen_imgs: Tensor, cfg: ExperimentConfig, device: str
 ) -> float:
+    """Compute FID using pre-generated images against the full training set.
+
+    Uses train=True (10k images for two-class CIFAR) so the real covariance
+    estimate is well-conditioned relative to InceptionV3's 2048-dim features.
+    """
     try:
         from torchmetrics.image.fid import FrechetInceptionDistance
     except ImportError:
@@ -278,19 +283,16 @@ def compute_fid(
         return float("nan")
 
     fid_metric = FrechetInceptionDistance(normalize=True).to(device)
-    ds = get_two_class_dataset(cfg, train=False)
+    ds = get_two_class_dataset(cfg, train=True)
     loader = DataLoader(ds, batch_size=128, shuffle=False,
                         num_workers=cfg.num_workers, pin_memory=pin_memory_for(device))
 
     for imgs, _ in loader:
         fid_metric.update(((imgs.clamp(-1, 1) + 1) / 2).to(device), real=True)
 
-    model.eval()
     bs = 256
-    for start in range(0, n_fake, bs):
-        b = min(bs, n_fake - start)
-        with torch.no_grad():
-            fake = ddim_sample(model, b, cfg, device)
-        fid_metric.update(((fake + 1) / 2).to(device), real=False)
+    for start in range(0, len(gen_imgs), bs):
+        batch = ((gen_imgs[start : start + bs].clamp(-1, 1) + 1) / 2).to(device)
+        fid_metric.update(batch, real=False)
 
     return float(fid_metric.compute())

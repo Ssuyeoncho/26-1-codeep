@@ -75,7 +75,8 @@ class ExperimentConfig:
     # ── GPU 가속 (CUDA 서버용, 예: RTX 4090) ──────────────────────────────────
     num_workers: int = 4          # DataLoader 병렬 로딩 (서버 CPU 코어에 맞춰 조정)
     amp: str = "auto"             # 혼합정밀: auto(=CUDA면 bf16)/bf16/fp16/fp32
-    compile_model: bool = True    # torch.compile JIT (실패 시 자동 eager 폴백)
+    # torch.compile은 nvcc 권한 등 환경 의존성이 있어 기본 OFF. 가능한 환경에서만 --compile로 켠다.
+    compile_model: bool = False
     data_root: str = ""          # set at runtime from PROJECT_DIR
     run_name: str = "phase3_cifar"
     compute_fid: bool = True

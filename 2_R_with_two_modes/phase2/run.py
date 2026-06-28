@@ -550,8 +550,8 @@ def parse_args() -> argparse.Namespace:
     # ── GPU 가속 옵션 ─────────────────────────────────────────────────────────
     p.add_argument("--amp", choices=["auto", "bf16", "fp16", "fp32"], default="auto",
                    help="혼합정밀. auto=CUDA면 bf16. 정확 재현이 필요하면 fp32.")
-    p.add_argument("--no-compile", action="store_true",
-                   help="torch.compile 비활성화(문제 발생 시).")
+    p.add_argument("--compile", dest="compile_model", action="store_true",
+                   help="torch.compile 활성화(기본 OFF; nvcc 등 환경이 받쳐줄 때만).")
     # 비교 schedule 구성 (Phase 3와 동일한 sweep 인자)
     p.add_argument("--s-values",       type=float, nargs="+", default=None,
                    help="DMSR-Normal의 폭 s 후보들 (예: --s-values 1.5 0.8 0.3).")
@@ -587,7 +587,7 @@ def main() -> None:
         n_generate=args.n_generate,
         gen_batch_size=args.gen_batch_size,
         amp=args.amp,
-        compile_model=not args.no_compile,
+        compile_model=args.compile_model,
         s_values=tuple(args.s_values) if args.s_values else (1.5, 0.8, 0.3),
         laplace_b=args.laplace_b,
         baseline_schedule=args.baseline_schedule,

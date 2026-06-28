@@ -60,7 +60,8 @@ class ExperimentConfig:
     # ── GPU 가속 (CUDA 서버용, 예: RTX 4090) ──────────────────────────────────
     # 모든 schedule에 동일하게 적용되는 처리량 옵션이라 비교 공정성에 영향 없음.
     amp: str = "auto"             # 혼합정밀: auto(=CUDA면 bf16)/bf16/fp16/fp32
-    compile_model: bool = True    # torch.compile JIT (실패 시 자동 eager 폴백)
+    # torch.compile은 nvcc 권한 등 환경 의존성이 있어 기본 OFF. 가능한 환경에서만 --compile로 켠다.
+    compile_model: bool = False
 
     # ── DDIM 생성 (모든 schedule 공통·고정: EDM식 통제 설계) ──────────────────
     ddim_steps: int = 50

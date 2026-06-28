@@ -44,6 +44,9 @@ class ExperimentConfig:
     # ── Denoiser 학습 ─────────────────────────────────────────────────────────
     train_steps: int = 20000
     batch_size: int = 128
+    # Effective batch_size는 유지하되, GPU에는 micro_batch_size 단위로 쪼개 올린다.
+    # None이면 기존처럼 한 번에 batch_size 전체를 처리한다.
+    micro_batch_size: int | None = None
     lr: float = 2e-4
     eval_batch_size: int = 256
     eval_grid_size: int = 40
@@ -75,7 +78,9 @@ class ExperimentConfig:
     # p_train(λ) = N(λ_R*, s²)에서 폭 s만 sweep하고, Laplace 변형도 함께 둔다.
     # 변경되는 것은 오직 p_train(λ) 하나이며 나머지(loss weighting, sampler,
     # 모델 구조, optimizer, steps)는 전부 고정한다는 통제 설계를 따른다.
-    s_values: tuple[float, ...] = (1.5, 0.8, 0.3)
+    # λ_R* 중심에서 폭 s를 좁게→넓게 sweep. 좁으면(0.3) 붕괴, 넓으면(4.0) 전 구간에
+    # 가까워진다. "얼마나 퍼뜨려야 잘 되는가(=데이터/이미지 크기 의존)"를 보기 위함.
+    s_values: tuple[float, ...] = (0.3, 0.8, 1.5, 2.5, 4.0)
     laplace_b: float = 0.5
     hang_laplace_b: float = 0.5     # Hang et al. baseline: λ=0 중심 Laplace
     # 유의성 검정에서 다른 schedule들과 비교할 기준(baseline) schedule 이름.

@@ -149,7 +149,7 @@ def train_one_schedule(
     if cfg.num_workers > 0:
         # 워커를 살려두면(persistent) epoch마다 재생성 비용이 없어 GPU가 안 굶는다.
         # prefetch_factor는 워커가 있을 때만 유효(구버전 torch 호환을 위해 조건부 전달).
-        loader_kwargs.update(persistent_workers=True, prefetch_factor=4)
+        loader_kwargs.update(persistent_workers=True, prefetch_factor=cfg.prefetch_factor)
     loader = DataLoader(ds, **loader_kwargs)
 
     model = UNet(base_ch=cfg.base_ch, num_res_blocks=cfg.num_res_blocks).to(device)
@@ -164,37 +164,48 @@ def train_one_schedule(
     # forward 만 컴파일 객체로 호출하고, opt/ema/state_dict 은 원본 model 사용
     # (둘은 같은 파라미터를 공유하므로 갱신이 그대로 반영됨).
     fwd = maybe_compile(model, cfg.compile_model)
+    micro_bs = cfg.micro_batch_size or cfg.batch_size
+    micro_bs = max(1, min(micro_bs, cfg.batch_size))
 
     model.train()
     for step, (imgs, _) in enumerate(_infinite(loader), start=1):
         if step > cfg.train_steps:
             break
-        imgs = imgs.to(device, non_blocking=True)
-        lam = sample_schedule(spec, len(imgs), cfg, device)          # (B, 1)
-        alpha, sigma = vp_alpha_sigma(lam)                           # (B, 1)
-        eps = torch.randn_like(imgs)
-        x_lam = alpha[:, :, None, None] * imgs + sigma[:, :, None, None] * eps
-
-        with autocast_ctx(device, amp_on, amp_dtype):
-            pred_eps = fwd(x_lam, lam)
-            loss = F.mse_loss(pred_eps, eps)
-
         opt.zero_grad(set_to_none=True)
-        if use_scaler:                                  # fp16 경로: scaler로 underflow 방지
-            scaler.scale(loss).backward()
+        loss_accum = 0.0
+        chunks = list(imgs.split(micro_bs))
+        batch_n = len(imgs)
+        for chunk in chunks:
+            chunk = chunk.to(device, non_blocking=True)
+            lam = sample_schedule(spec, len(chunk), cfg, device)     # (B, 1)
+            alpha, sigma = vp_alpha_sigma(lam)                       # (B, 1)
+            eps = torch.randn_like(chunk)
+            x_lam = alpha[:, :, None, None] * chunk + sigma[:, :, None, None] * eps
+
+            with autocast_ctx(device, amp_on, amp_dtype):
+                pred_eps = fwd(x_lam, lam)
+                raw_loss = F.mse_loss(pred_eps, eps)
+                loss = raw_loss * (len(chunk) / batch_n)
+            loss_accum += float(raw_loss.detach().cpu()) * (len(chunk) / batch_n)
+
+            if use_scaler:                              # fp16 경로: scaler로 underflow 방지
+                scaler.scale(loss).backward()
+            else:                                       # bf16/fp32 경로
+                loss.backward()
+
+        if use_scaler:
             scaler.unscale_(opt)                        # clip 전에 gradient 원복
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(opt)
             scaler.update()
-        else:                                           # bf16/fp32 경로
-            loss.backward()
+        else:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
         ema.update(model)
 
         if step == 1 or step % report_every == 0 or step == cfg.train_steps:
-            history.append({"step": float(step), "train_mse": float(loss.detach().cpu())})
-            print(f"  [{spec.name}] step {step}/{cfg.train_steps}  loss={loss.item():.5f}")
+            history.append({"step": float(step), "train_mse": loss_accum})
+            print(f"  [{spec.name}] step {step}/{cfg.train_steps}  loss={loss_accum:.5f}")
 
     return model, ema, history
 

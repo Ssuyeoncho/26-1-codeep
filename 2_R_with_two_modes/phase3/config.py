@@ -45,6 +45,9 @@ class ExperimentConfig:
     # Diffusion training
     train_steps: int = 100_000
     batch_size: int = 128
+    # Effective batch_size는 유지하되, GPU에는 micro_batch_size 단위로 쪼개 올린다.
+    # None이면 기존처럼 한 번에 batch_size 전체를 처리한다.
+    micro_batch_size: int | None = None
     lr: float = 2e-4
     ema_decay: float = 0.9999
     base_ch: int = 64
@@ -62,7 +65,8 @@ class ExperimentConfig:
     # 생성 시 한 번에 만드는 배치 크기 (학습 결과와 무관 — GPU 처리량용. 4090이면 키워도 됨)
     gen_batch_size: int = 512
     # Schedule sweep (변경되는 것은 p_train(λ) 하나뿐 — 나머지는 전부 고정)
-    s_values: tuple[float, ...] = (1.5, 0.8, 0.3)
+    # λ_R* 중심에서 폭 s를 좁게→넓게 sweep (붕괴→회복 지점, 데이터/이미지 크기 의존성 관찰).
+    s_values: tuple[float, ...] = (0.3, 0.8, 1.5, 2.5, 4.0)
     laplace_b: float = 0.5
     # 유의성 검정에서 다른 schedule들과 비교할 기준(baseline) schedule 이름.
     baseline_schedule: str = "cosine_vp"
@@ -74,6 +78,7 @@ class ExperimentConfig:
     device: str = "auto"
     # ── GPU 가속 (CUDA 서버용, 예: RTX 4090) ──────────────────────────────────
     num_workers: int = 4          # DataLoader 병렬 로딩 (서버 CPU 코어에 맞춰 조정)
+    prefetch_factor: int = 2      # 워커당 미리 읽을 batch 수. 낮출수록 CPU/RAM 순간 부하 감소.
     amp: str = "auto"             # 혼합정밀: auto(=CUDA면 bf16)/bf16/fp16/fp32
     # torch.compile은 nvcc 권한 등 환경 의존성이 있어 기본 OFF. 가능한 환경에서만 --compile로 켠다.
     compile_model: bool = False

@@ -537,6 +537,12 @@ def parse_args() -> argparse.Namespace:
                    help="'auto' (best available), 'cuda', 'mps', or 'cpu'.")
     p.add_argument("--train-steps", type=int, default=None)
     p.add_argument("--batch-size", type=int, default=None)
+    p.add_argument("--micro-batch-size", type=int, default=None,
+                   help="GPU에 한 번에 올릴 학습 batch 크기. batch-size는 유지하고 gradient accumulation으로 업데이트한다.")
+    p.add_argument("--clf-batch-size", type=int, default=None,
+                   help="classifier 학습 batch 크기. None이면 기본값 256.")
+    p.add_argument("--gen-batch-size", type=int, default=None,
+                   help="DDIM 생성 시 한 번에 만들 이미지 수. 총 생성 수는 바꾸지 않고 GPU 순간 부하만 낮춘다.")
     p.add_argument("--seed", type=int, default=20260526)
     p.add_argument("--num-seeds", type=int, default=None)
     p.add_argument("--s-values", type=float, nargs="+", default=None)
@@ -547,6 +553,8 @@ def parse_args() -> argparse.Namespace:
     # ── GPU 가속 옵션 ─────────────────────────────────────────────────────────
     p.add_argument("--num-workers", type=int, default=4,
                    help="DataLoader 병렬 워커 수 (서버 CPU 코어에 맞춰 조정).")
+    p.add_argument("--prefetch-factor", type=int, default=2,
+                   help="DataLoader 워커당 미리 읽을 batch 수. 낮출수록 CPU/RAM 순간 부하 감소.")
     p.add_argument("--amp", choices=["auto", "bf16", "fp16", "fp32"], default="auto",
                    help="혼합정밀. auto=CUDA면 bf16. 정확 재현이 필요하면 fp32.")
     p.add_argument("--compile", dest="compile_model", action="store_true",
@@ -563,19 +571,23 @@ def main() -> None:
     cfg = ExperimentConfig(
         class_pair=args.class_pair,
         clf_epochs=preset["clf_epochs"],
+        clf_batch_size=args.clf_batch_size if args.clf_batch_size is not None else 256,
         train_steps=args.train_steps if args.train_steps is not None else preset["train_steps"],
         batch_size=args.batch_size if args.batch_size is not None else 128,
+        micro_batch_size=args.micro_batch_size,
         n_gen_samples=preset["n_gen_samples"],
+        gen_batch_size=args.gen_batch_size if args.gen_batch_size is not None else 512,
         dmsr_n_samples=preset["dmsr_n_samples"],
         dmsr_grid_size=preset["dmsr_grid_size"],
         eval_n_samples=preset["eval_n_samples"],
         compute_fid=(not args.no_fid) and preset["compute_fid"],
         seed=args.seed,
         num_seeds=args.num_seeds if args.num_seeds is not None else preset["num_seeds"],
-        s_values=tuple(args.s_values) if args.s_values else (1.5, 0.8, 0.3),
+        s_values=tuple(args.s_values) if args.s_values else (0.3, 0.8, 1.5, 2.5, 4.0),
         baseline_schedule=args.baseline_schedule,
         device=device,
         num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
         amp=args.amp,
         compile_model=args.compile_model,
         data_root=str(PROJECT_DIR / "data"),

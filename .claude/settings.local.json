@@ -12,7 +12,8 @@
       "Bash(python3 -m py_compile phase2/*.py)",
       "Bash(python3 -m py_compile gpu_perf.py)",
       "Bash(python3 -m py_compile gpu_perf.py stats_analysis.py gen_metrics.py phase2/*.py phase3/*.py)",
-      "Bash(python3 -m py_compile gpu_perf.py phase3/experiment.py)"
+      "Bash(python3 -m py_compile gpu_perf.py phase3/experiment.py)",
+      "Bash(python3 -c \"import json;d=json.load\\(open\\('dmsr_info.json'\\)\\);print\\('lambda_r_star=',round\\(d['lambda_r_star'],3\\),'  T_R=[',round\\(d['transition_low'],3\\),',',round\\(d['transition_high'],3\\),']'\\)\")"
     ]
   }
 }

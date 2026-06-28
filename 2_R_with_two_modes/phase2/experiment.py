@@ -153,29 +153,40 @@ def train_one_schedule(
     amp_on, amp_dtype, use_scaler = resolve_amp(device, config.amp)
     scaler = make_grad_scaler(use_scaler)
     fwd = maybe_compile(model, config.compile_model)   # forward만 컴파일 객체로 호출
+    micro_bs = config.micro_batch_size or config.batch_size
+    micro_bs = max(1, min(micro_bs, config.batch_size))
 
     model.train()
     for step in range(1, config.train_steps + 1):
         idx   = torch.randint(0, n_train, (config.batch_size,), device=device)
         x0    = train_imgs[idx]
-        lam   = sample_schedule(spec, config.batch_size, config, device)  # (B, 1)
-        alpha, sigma = vp_alpha_sigma(lam.view(-1, 1, 1, 1))
-        eps   = torch.randn_like(x0)
-        with autocast_ctx(device, amp_on, amp_dtype):
-            pred_eps = fwd(alpha * x0 + sigma * eps, lam.view(-1))
-            loss = F.mse_loss(pred_eps, eps)
-
         opt.zero_grad(set_to_none=True)
-        if use_scaler:                                  # fp16 경로
-            scaler.scale(loss).backward()
+        loss_accum = 0.0
+        chunks = list(x0.split(micro_bs))
+        batch_n = len(x0)
+        for chunk in chunks:
+            lam = sample_schedule(spec, len(chunk), config, device)  # (B, 1)
+            alpha, sigma = vp_alpha_sigma(lam.view(-1, 1, 1, 1))
+            eps = torch.randn_like(chunk)
+            with autocast_ctx(device, amp_on, amp_dtype):
+                pred_eps = fwd(alpha * chunk + sigma * eps, lam.view(-1))
+                raw_loss = F.mse_loss(pred_eps, eps)
+                loss = raw_loss * (len(chunk) / batch_n)
+            loss_accum += float(raw_loss.detach().cpu()) * (len(chunk) / batch_n)
+
+            if use_scaler:                              # fp16 경로
+                scaler.scale(loss).backward()
+            else:                                       # bf16/fp32 경로
+                loss.backward()
+
+        if use_scaler:
             scaler.step(opt)
             scaler.update()
-        else:                                           # bf16/fp32 경로
-            loss.backward()
+        else:
             opt.step()
 
         if step == 1 or step % report_every == 0 or step == config.train_steps:
-            history.append({"step": float(step), "train_mse": float(loss.detach().cpu())})
+            history.append({"step": float(step), "train_mse": loss_accum})
 
     model.eval()
     return model, history

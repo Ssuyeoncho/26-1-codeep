@@ -537,6 +537,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-ch",        type=int,   default=32)
     p.add_argument("--train-steps",    type=int,   default=20000)
     p.add_argument("--batch-size",     type=int,   default=128)
+    p.add_argument("--micro-batch-size", type=int, default=None,
+                   help="GPU에 한 번에 올릴 학습 batch 크기. batch-size는 유지하고 gradient accumulation으로 업데이트한다.")
     p.add_argument("--eval-grid-size", type=int,   default=40)
     p.add_argument("--seed",           type=int,   default=20260526)
     # num_seeds ≥ 3 으로 주면 seed 간 통계 집계·유의성 검정이 의미를 갖는다.
@@ -579,6 +581,7 @@ def main() -> None:
         base_ch=args.base_ch,
         train_steps=args.train_steps,
         batch_size=args.batch_size,
+        micro_batch_size=args.micro_batch_size,
         eval_grid_size=args.eval_grid_size,
         seed=args.seed,
         num_seeds=args.num_seeds,
@@ -588,7 +591,7 @@ def main() -> None:
         gen_batch_size=args.gen_batch_size,
         amp=args.amp,
         compile_model=args.compile_model,
-        s_values=tuple(args.s_values) if args.s_values else (1.5, 0.8, 0.3),
+        s_values=tuple(args.s_values) if args.s_values else (0.3, 0.8, 1.5, 2.5, 4.0),
         laplace_b=args.laplace_b,
         baseline_schedule=args.baseline_schedule,
         data_root=args.data_root,

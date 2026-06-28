@@ -11,24 +11,36 @@
 set -e
 cd "$(dirname "$0")"            # 항상 2_R_with_two_modes/ 에서 실행
 export TORCHDYNAMO_DISABLE=1    # torch.compile 완전 비활성화 (어떤 코드 버전에서도 안전)
+# RTX 2080 Ti(11GB) 기준 안전 실행값. 총 seed/steps/생성 수는 유지하고
+# 한 번에 GPU/CPU에 올리는 양만 줄인다.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 
 SCRIPT="phase2/phase2_mnist_experiment.py"
 MODE="${1:-smoke}"
+SAFE_ARGS=(
+  --amp fp16
+  --micro-batch-size 32
+  --gen-batch-size 64
+)
 
 case "$MODE" in
   smoke)
     echo "[run_phase2] SMOKE TEST (빠른 동작 확인)"
     python3 "$SCRIPT" --device cuda \
       --train-steps 500 --n-generate 100 --ddim-steps 5 \
-      --dmsr-grid-size 12 --eval-grid-size 12 --clf-epochs 2
+      --dmsr-grid-size 12 --eval-grid-size 12 --clf-epochs 2 \
+      "${SAFE_ARGS[@]}"
     ;;
   full)
-    echo "[run_phase2] FULL (단일 seed)"
-    python3 "$SCRIPT" --device cuda
+    echo "[run_phase2] FULL (단일 seed, RTX 2080 Ti safe)"
+    python3 "$SCRIPT" --device cuda "${SAFE_ARGS[@]}"
     ;;
   final)
-    echo "[run_phase2] FINAL (seed 3개 — 통계·유의성 검정)"
-    python3 "$SCRIPT" --device cuda --num-seeds 3
+    echo "[run_phase2] FINAL (seed 3개 — 통계·유의성 검정, RTX 2080 Ti safe)"
+    python3 "$SCRIPT" --device cuda --num-seeds 3 "${SAFE_ARGS[@]}"
     ;;
   *)
     echo "Usage: bash run_phase2.sh [smoke|full|final]"

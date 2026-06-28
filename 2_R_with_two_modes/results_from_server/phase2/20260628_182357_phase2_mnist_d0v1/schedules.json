@@ -1,0 +1,44 @@
+[
+  {
+    "name": "cosine_vp",
+    "kind": "cosine_vp",
+    "center_lambda": null,
+    "scale": null,
+    "note": "VP cosine schedule induced density (\uad00\ud589 baseline)."
+  },
+  {
+    "name": "hang_laplace_b0.5",
+    "kind": "hang_laplace_lambda",
+    "center_lambda": null,
+    "scale": 0.5,
+    "note": "Laplace(0, 0.5) \u2014 Hang et al. baseline."
+  },
+  {
+    "name": "dmsr_normal_s1.5",
+    "kind": "dmsr_normal",
+    "center_lambda": -0.2564102564102573,
+    "scale": 1.5,
+    "note": "N(\u03bb_R*=-0.256, s=1.5)."
+  },
+  {
+    "name": "dmsr_normal_s0.8",
+    "kind": "dmsr_normal",
+    "center_lambda": -0.2564102564102573,
+    "scale": 0.8,
+    "note": "N(\u03bb_R*=-0.256, s=0.8)."
+  },
+  {
+    "name": "dmsr_normal_s0.3",
+    "kind": "dmsr_normal",
+    "center_lambda": -0.2564102564102573,
+    "scale": 0.3,
+    "note": "N(\u03bb_R*=-0.256, s=0.3)."
+  },
+  {
+    "name": "dmsr_laplace_b0.5",
+    "kind": "dmsr_laplace",
+    "center_lambda": -0.2564102564102573,
+    "scale": 0.5,
+    "note": "Laplace(\u03bb_R*=-0.256, b=0.5)."
+  }
+]

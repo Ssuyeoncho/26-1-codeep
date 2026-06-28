@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import torch, matplotlib, scipy, numpy; print\\('ok'\\)\")",
+      "Bash(conda env *)",
+      "Bash(python3 -c \"import numpy, scipy; print\\('numpy/scipy ok'\\)\")",
+      "Bash(python3 -m py_compile phase2/config.py phase2/experiment.py phase2/run.py phase2/phase2_mnist_experiment.py)",
+      "Read(//private/tmp/**)",
+      "Bash(pip install *)",
+      "Bash(python3 -c \"import numpy, scipy; print\\('numpy', numpy.__version__, 'scipy', scipy.__version__\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -m py_compile phase2/*.py)",
+      "Bash(python3 -m py_compile gpu_perf.py)",
+      "Bash(python3 -m py_compile gpu_perf.py stats_analysis.py gen_metrics.py phase2/*.py phase3/*.py)",
+      "Bash(python3 -m py_compile gpu_perf.py phase3/experiment.py)"
+    ]
+  }
+}

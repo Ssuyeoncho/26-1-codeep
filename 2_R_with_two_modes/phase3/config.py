@@ -54,14 +54,28 @@ class ExperimentConfig:
     eval_n_samples: int = 512
     n_gen_samples: int = 10_000
     ddim_steps: int = 50
-    # Schedule sweep
+    # DDIM 샘플링 λ 범위. DMSR 분석용 [lambda_min, lambda_max](=[-15,15])와 분리한다.
+    # 샘플링은 cosine 격자로 중앙(λ≈0)에 step을 집중시키는 게 유리하므로 좁게 잡는다.
+    # (Phase 2와 동일한 범위·격자 함수를 사용 → 두 phase sampler 완전 일치)
+    ddim_lambda_min: float = -8.0
+    ddim_lambda_max: float = 8.0
+    # 생성 시 한 번에 만드는 배치 크기 (학습 결과와 무관 — GPU 처리량용. 4090이면 키워도 됨)
+    gen_batch_size: int = 512
+    # Schedule sweep (변경되는 것은 p_train(λ) 하나뿐 — 나머지는 전부 고정)
     s_values: tuple[float, ...] = (1.5, 0.8, 0.3)
     laplace_b: float = 0.5
+    # 유의성 검정에서 다른 schedule들과 비교할 기준(baseline) schedule 이름.
+    baseline_schedule: str = "cosine_vp"
     # Misc
     seed: int = 20260526
+    # num_seeds ≥ 3 으로 주면 seed 간 통계 집계·유의성 검정이 의미를 갖는다.
+    # 동일 seed_idx 안에서 모든 schedule이 같은 run_seed를 공유하므로 paired 비교가 된다.
     num_seeds: int = 1
     device: str = "auto"
-    num_workers: int = 0
+    # ── GPU 가속 (CUDA 서버용, 예: RTX 4090) ──────────────────────────────────
+    num_workers: int = 4          # DataLoader 병렬 로딩 (서버 CPU 코어에 맞춰 조정)
+    amp: str = "auto"             # 혼합정밀: auto(=CUDA면 bf16)/bf16/fp16/fp32
+    compile_model: bool = True    # torch.compile JIT (실패 시 자동 eager 폴백)
     data_root: str = ""          # set at runtime from PROJECT_DIR
     run_name: str = "phase3_cifar"
     compute_fid: bool = True

@@ -10,6 +10,8 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader
 
+from gpu_perf import autocast_ctx, make_grad_scaler, maybe_compile, resolve_amp
+
 from .config import ExperimentConfig, ScheduleSpec
 from .models import (
     EMA, FeatureClassifier, UNet,
@@ -140,10 +142,15 @@ def train_one_schedule(
 ) -> tuple[UNet, EMA, list[dict[str, float]]]:
     seed_everything(run_seed)
     ds = get_two_class_dataset(cfg, train=True)
-    loader = DataLoader(
-        ds, batch_size=cfg.batch_size, shuffle=True,
+    loader_kwargs: dict = dict(
+        batch_size=cfg.batch_size, shuffle=True,
         num_workers=cfg.num_workers, pin_memory=pin_memory_for(device), drop_last=True,
     )
+    if cfg.num_workers > 0:
+        # 워커를 살려두면(persistent) epoch마다 재생성 비용이 없어 GPU가 안 굶는다.
+        # prefetch_factor는 워커가 있을 때만 유효(구버전 torch 호환을 위해 조건부 전달).
+        loader_kwargs.update(persistent_workers=True, prefetch_factor=4)
+    loader = DataLoader(ds, **loader_kwargs)
 
     model = UNet(base_ch=cfg.base_ch, num_res_blocks=cfg.num_res_blocks).to(device)
     ema = EMA(model, cfg.ema_decay)
@@ -151,23 +158,38 @@ def train_one_schedule(
     history: list[dict[str, float]] = []
     report_every = max(1, cfg.train_steps // 20)
 
+    # ── GPU 가속: 혼합정밀(AMP) + torch.compile ───────────────────────────────
+    amp_on, amp_dtype, use_scaler = resolve_amp(device, cfg.amp)
+    scaler = make_grad_scaler(use_scaler)
+    # forward 만 컴파일 객체로 호출하고, opt/ema/state_dict 은 원본 model 사용
+    # (둘은 같은 파라미터를 공유하므로 갱신이 그대로 반영됨).
+    fwd = maybe_compile(model, cfg.compile_model)
+
     model.train()
     for step, (imgs, _) in enumerate(_infinite(loader), start=1):
         if step > cfg.train_steps:
             break
-        imgs = imgs.to(device)
+        imgs = imgs.to(device, non_blocking=True)
         lam = sample_schedule(spec, len(imgs), cfg, device)          # (B, 1)
         alpha, sigma = vp_alpha_sigma(lam)                           # (B, 1)
         eps = torch.randn_like(imgs)
         x_lam = alpha[:, :, None, None] * imgs + sigma[:, :, None, None] * eps
 
-        pred_eps = model(x_lam, lam)
-        loss = F.mse_loss(pred_eps, eps)
+        with autocast_ctx(device, amp_on, amp_dtype):
+            pred_eps = fwd(x_lam, lam)
+            loss = F.mse_loss(pred_eps, eps)
 
         opt.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        opt.step()
+        if use_scaler:                                  # fp16 경로: scaler로 underflow 방지
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)                        # clip 전에 gradient 원복
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(opt)
+            scaler.update()
+        else:                                           # bf16/fp32 경로
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
         ema.update(model)
 
         if step == 1 or step % report_every == 0 or step == cfg.train_steps:
@@ -181,9 +203,17 @@ def train_one_schedule(
 
 @torch.no_grad()
 def ddim_sample(model: UNet, n: int, cfg: ExperimentConfig, device: str) -> Tensor:
-    """Deterministic DDIM in VP lambda space (lambda_min → lambda_max)."""
-    lam_seq = np.linspace(cfg.lambda_min, cfg.lambda_max, cfg.ddim_steps + 1)
+    """Deterministic DDIM in VP lambda space (lambda_min → lambda_max).
+
+    생성도 학습과 동일한 AMP(autocast)로 forward 하여 처리량을 높인다(추론 전용이라
+    GradScaler는 불필요). 모든 schedule에 똑같이 적용되므로 비교 공정성에는 영향 없다.
+    """
+    # Phase 2와 동일한 공용 cosine 격자(중앙 집중). DMSR 분석 범위가 아니라
+    # ddim_lambda_min/max 를 쓴다.
+    from ddim_grid import cosine_lambda_grid
+    lam_seq = cosine_lambda_grid(cfg.ddim_steps, cfg.ddim_lambda_min, cfg.ddim_lambda_max)
     model.eval()
+    amp_on, amp_dtype, _ = resolve_amp(device, cfg.amp)
     x = torch.randn(n, 3, cfg.image_size, cfg.image_size, device=device)
 
     for i in range(cfg.ddim_steps):
@@ -194,7 +224,9 @@ def ddim_sample(model: UNet, n: int, cfg: ExperimentConfig, device: str) -> Tens
         s_t = float(vp_alpha_sigma_np(np.array([lam_t]))[1][0])
 
         lam_in = torch.full((n, 1), lam_s, device=device)
-        eps_hat = model(x, lam_in)
+        with autocast_ctx(device, amp_on, amp_dtype):
+            eps_hat = model(x, lam_in)
+        eps_hat = eps_hat.float()                    # 이후 산술은 fp32로 안정적으로
         x0_hat = (x - s_s * eps_hat) / (a_s + 1e-8)
         x0_hat = x0_hat.clamp(-1.0, 1.0)
         x = a_t * x0_hat + s_t * eps_hat
@@ -203,8 +235,9 @@ def ddim_sample(model: UNet, n: int, cfg: ExperimentConfig, device: str) -> Tens
 
 
 def generate_samples_batched(
-    model: UNet, n: int, cfg: ExperimentConfig, device: str, bs: int = 256
+    model: UNet, n: int, cfg: ExperimentConfig, device: str, bs: int | None = None
 ) -> Tensor:
+    bs = bs if bs is not None else cfg.gen_batch_size
     out: list[Tensor] = []
     for start in range(0, n, bs):
         b = min(bs, n - start)
@@ -266,6 +299,47 @@ def compute_coverage_metrics(
     s_interp = np.interp(sampled, lambda_grid, slope)
     s = float(np.mean(s_interp))
     return m, s
+
+
+# ── φ-feature 공간 생성 품질 지표 (Phase 2와 동일한 정의) ───────────────────────
+
+@torch.no_grad()
+def gather_real_images(cfg: ExperimentConfig, device: str, n_max: int) -> Tensor:
+    """test split에서 진짜 이미지를 최대 n_max장 모아 하나의 텐서로 반환한다.
+
+    φ-feature 기반 지표(FID/KID/PRDC)의 '진짜 분포' 쪽 표본으로 쓴다.
+    """
+    ds = get_two_class_dataset(cfg, train=False)
+    loader = DataLoader(ds, batch_size=256, shuffle=False, num_workers=cfg.num_workers)
+    imgs: list[Tensor] = []
+    total = 0
+    for x, _ in loader:
+        imgs.append(x)
+        total += len(x)
+        if total >= n_max:
+            break
+    return torch.cat(imgs)[:n_max]
+
+
+def compute_phi_metrics(
+    classifier: FeatureClassifier,
+    real_imgs: Tensor,
+    gen_imgs: Tensor,
+    device: str,
+) -> dict[str, float]:
+    """φ-feature 공간에서 FID·KID·Precision/Recall/Density/Coverage를 계산한다.
+
+    Phase 2와 **완전히 동일한** 공용 함수(gen_metrics.compute_feature_metrics)를 쓴다.
+    Inception-FID(compute_fid)는 CIFAR 표준 헤드라인 지표로 따로 두고, 이 φ 지표들은
+    두 phase를 일관되게 잇는 비교 축으로 사용한다.
+    반환 키: fid_phi, kid_phi, kid_phi_std, precision_phi, recall_phi,
+             density_phi, coverage_phi.
+    """
+    from gen_metrics import compute_feature_metrics
+
+    real_f = _extract_features(classifier, real_imgs, device).numpy()
+    gen_f  = _extract_features(classifier, gen_imgs,  device).numpy()
+    return compute_feature_metrics(real_f, gen_f, suffix="_phi")
 
 
 def compute_fid(

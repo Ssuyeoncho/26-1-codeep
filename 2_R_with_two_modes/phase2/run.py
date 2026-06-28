@@ -16,16 +16,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from gpu_perf import configure_backends
+
 from .config import ExperimentConfig, ScheduleSpec
 from .models import (
     FeatureClassifier, load_mnist_two_class, resolve_device,
     seed_everything, train_feature_classifier,
 )
 from .experiment import (
+    LOWER_IS_BETTER,
+    aggregate_over_seeds, aggregate_per_lambda, aggregated_csv_fieldnames,
     build_schedules, compute_classifier_metrics, compute_coverage_metrics,
-    compute_empirical_dmsr, compute_empirical_transition, compute_fid_phi,
-    ddim_generate, evaluate_per_lambda, extract_features,
-    sample_schedule, train_one_schedule,
+    compute_empirical_dmsr, compute_empirical_transition, compute_phi_metrics,
+    ddim_generate, evaluate_per_lambda,
+    sample_schedule, significance_tests, train_one_schedule,
 )
 
 
@@ -112,6 +116,30 @@ def plot_fid_summary(summary_rows, out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_fid_with_error_bars(agg_rows, out_path: Path) -> None:
+    """schedule별 FID 평균 ± 표준편차(seed 간)를 막대그래프로 그린다.
+
+    seed가 1개뿐이면 오차막대가 없어 단일 막대로 표시된다. seed를 늘릴수록
+    이 그림이 "차이가 분산보다 큰지"를 시각적으로 보여 주는 핵심 통계 그래프가 된다.
+    """
+    rows  = [r for r in agg_rows if np.isfinite(r.get("fid_phi_mean", float("nan")))]
+    if not rows:
+        return
+    rows  = sorted(rows, key=lambda r: r["fid_phi_mean"])
+    names = [r["schedule"] for r in rows]
+    means = [r["fid_phi_mean"] for r in rows]
+    # std가 NaN(seed 1개)이면 오차막대 0으로 처리
+    errs  = [0.0 if not np.isfinite(r.get("fid_phi_std", float("nan"))) else r["fid_phi_std"]
+             for r in rows]
+    fig, ax = plt.subplots(figsize=(8.0, 4.5))
+    ax.barh(names, means, xerr=errs, color="#2457A6", alpha=0.8, capsize=4)
+    ax.set_xlabel("FID (φ-feature space), mean ± std over seeds")
+    ax.set_title(f"FID by schedule (n_seeds={rows[0]['n_seeds']})")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=180)
+    plt.close(fig)
+
+
 def plot_coverage_tradeoff(summary_rows, out_path: Path) -> None:
     fids = [float(r.get("fid_phi", 0.0)) for r in summary_rows]
     fig, ax = plt.subplots(figsize=(7.4, 5.2))
@@ -174,7 +202,9 @@ def plot_sample_grid(schedule_name, gen_imgs, out_path: Path, n_rows=4, n_cols=8
 _SUMMARY_KEYS = [
     "schedule", "seed",
     "coverage_m", "expected_s_norm",
-    "fid_phi",
+    # 생성 품질 지표 (φ 공간) — Phase 3와 동일한 정의
+    "fid_phi", "kid_phi", "kid_phi_std",
+    "precision_phi", "recall_phi", "density_phi", "coverage_phi",
     "classifier_confidence", "balance_error",
     "mean_mse", "transition_mse", "low_noise_mse", "high_noise_mse",
 ]
@@ -197,10 +227,64 @@ def save_per_lambda_csv(results: list[dict], path: Path) -> None:
                 writer.writerow([r["schedule"], int(r["seed"]), lam, mse])
 
 
+def save_aggregated_csv(agg_rows: list[dict], path: Path) -> None:
+    """seed 간 집계 결과(mean/std/sem/n)를 CSV로 저장한다.
+
+    컬럼은 집계 결과에서 동적으로 만든다(지표 자동 탐지와 일관). 따라서 새로운
+    지표가 추가돼도 CSV가 자동으로 그 컬럼을 포함한다.
+    """
+    if not agg_rows:
+        return
+    fieldnames = aggregated_csv_fieldnames(agg_rows)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in agg_rows:
+            writer.writerow({k: row.get(k, "") for k in fieldnames})
+
+
+def save_significance_md(
+    sig_rows: list[dict],
+    baseline: str,
+    metric: str,
+    num_seeds: int,
+    out_path: Path,
+) -> None:
+    """baseline 대비 paired 유의성 검정 결과를 사람이 읽을 수 있게 저장한다."""
+    arrow = "낮을수록" if metric in LOWER_IS_BETTER else "높을수록"
+    lines = [
+        f"# Phase 2 유의성 검정 ({metric}, baseline = {baseline})", "",
+        f"- 지표 해석: **{metric}** 은 {arrow} 좋다.",
+        f"- 설계: 동일 seed에서 측정한 값끼리 짝지은 **paired** 비교 (n_seeds={num_seeds}).",
+        "- mean_diff = (해당 schedule − baseline)의 seed 평균. "
+        "낮을수록 좋은 지표면 음수가 개선을 뜻한다.",
+        "- p-value 는 paired t-test 기준 (seed ≥ 5 이면 Wilcoxon 보조 제시).", "",
+        "| schedule | n_pairs | mean_diff | improved | t p-value | wilcoxon p-value | status |",
+        "|---|---:|---:|:---:|---:|---:|---|",
+    ]
+    for r in sig_rows:
+        imp = "—" if r["improved_vs_baseline"] is None else ("✓" if r["improved_vs_baseline"] else "✗")
+        def _fmt(x: float) -> str:
+            return "nan" if not np.isfinite(x) else f"{x:.4g}"
+        lines.append(
+            f"| {r['schedule']} | {r['n_pairs']} | {_fmt(r['mean_diff'])} | {imp} "
+            f"| {_fmt(r['t_pvalue'])} | {_fmt(r['wilcoxon_pvalue'])} | {r['status']} |"
+        )
+    if num_seeds < 2:
+        lines += [
+            "",
+            "> ⚠️ seed가 1개뿐이라 유의성 검정을 수행할 수 없습니다. "
+            "Phase 3 본 실험에서는 `--num-seeds 3` 이상으로 재실행해 이 표를 채웁니다.",
+        ]
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def save_summary_md(
     config: ExperimentConfig,
     specs: list[ScheduleSpec],
     summary_rows: list[dict],
+    agg_rows: list[dict],
+    sig_rows: list[dict],
     dmsr_info: dict,
     out_path: Path,
 ) -> None:
@@ -225,9 +309,10 @@ def save_summary_md(
     ]
     for spec in specs:
         lines.append(f"- **{spec.name}**: {spec.note}")
+    # ── per-(schedule, seed) raw 결과 (재현·디버깅용) ──────────────────────────
     lines += [
         "",
-        "## Main Results", "",
+        "## Per-run Results (schedule × seed)", "",
         "| rank | schedule | seed | M coverage | S norm | FID (φ) | clf conf | balance err | mean MSE | transition MSE |",
         "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
@@ -240,12 +325,68 @@ def save_summary_md(
             f"| {float(row.get('balance_error', float('nan'))):.4f} "
             f"| {float(row['mean_mse']):.4f} | {float(row['transition_mse']):.4f} |"
         )
+
+    # ── seed 간 집계 결과 (mean ± std) — 통계 해석의 본체 ───────────────────────
+    agg_sorted = sorted(
+        agg_rows,
+        key=lambda r: r.get("fid_phi_mean", float("inf"))
+        if np.isfinite(r.get("fid_phi_mean", float("nan"))) else float("inf"),
+    )
+    lines += [
+        "",
+        f"## Aggregated over seeds (n_seeds = {config.num_seeds})", "",
+        "생성 품질 지표는 mean ± std(seed 간)로 보고한다. seed가 1개면 std가 표시되지 않는다.",
+        "FID·KID는 낮을수록, Precision·Coverage는 높을수록 좋다.",
+        "",
+        "| rank | schedule | n | FID (φ) | KID (φ) | Precision (φ) | Coverage (φ) | mean MSE |",
+        "|---:|---|---:|---|---|---|---|---|",
+    ]
+
+    def _ms(row: dict, metric: str, fmt: str = ".3f") -> str:
+        mean, std = row.get(f"{metric}_mean", float("nan")), row.get(f"{metric}_std", float("nan"))
+        if not np.isfinite(mean):
+            return "nan"
+        if not np.isfinite(std):
+            return f"{mean:{fmt}}"
+        return f"{mean:{fmt}} ± {std:{fmt}}"
+
+    for rank, row in enumerate(agg_sorted, 1):
+        lines.append(
+            f"| {rank} | {row['schedule']} | {int(row['n_seeds'])} "
+            f"| {_ms(row, 'fid_phi', '.2f')} | {_ms(row, 'kid_phi', '.4f')} "
+            f"| {_ms(row, 'precision_phi')} | {_ms(row, 'coverage_phi')} | {_ms(row, 'mean_mse', '.4f')} |"
+        )
+
+    # ── baseline 대비 paired 유의성 검정 ───────────────────────────────────────
+    lines += [
+        "",
+        f"## Significance vs baseline ({config.baseline_schedule}, metric = FID φ)", "",
+        "동일 seed에서 짝지은 paired 비교. mean_diff<0 이면 baseline보다 FID가 낮다(개선).",
+        "",
+        "| schedule | n_pairs | mean_diff | improved | t p-value | status |",
+        "|---|---:|---:|:---:|---:|---|",
+    ]
+    for r in sig_rows:
+        imp = "—" if r["improved_vs_baseline"] is None else ("✓" if r["improved_vs_baseline"] else "✗")
+        p = "nan" if not np.isfinite(r["t_pvalue"]) else f"{r['t_pvalue']:.4g}"
+        md = "nan" if not np.isfinite(r["mean_diff"]) else f"{r['mean_diff']:.3f}"
+        lines.append(f"| {r['schedule']} | {r['n_pairs']} | {md} | {imp} | {p} | {r['status']} |")
+
     lines += [
         "",
         "## Interpretation Guide", "",
-        "- FID is computed in φ-feature space (not InceptionV3). Lower is better.",
-        "- `coverage_m` alone is not sufficient; the balance with full-range support matters.",
-        "- λ_R* is estimated empirically from the numerical slope of DMSR_φ(λ).",
+        "- 이 단계의 목적은 생성 성능 주장이 아니라 **파이프라인·통계 틀 검증**이다.",
+        "  MNIST는 쉬운 데이터라 schedule 간 FID 차이가 작아도 실패가 아니다.",
+        "- 생성 품질은 φ-feature space에서 FID·KID·Precision/Recall/Density/Coverage로 잰다.",
+        "  FID는 품질·다양성을 뭉뚱그리므로, Precision(품질)과 Recall/Coverage(다양성)를 "
+        "함께 보면 mode collapse 같은 실패를 분리해 볼 수 있다(Phase 3와 동일한 지표).",
+        "- KID는 표본이 적을 때 FID보다 신뢰성이 높고 부분표본 분산을 함께 준다.",
+        "- `coverage_m`(transition 질량) 하나만으로 우수성을 말할 수 없으며, "
+        "full-range support 와의 균형이 중요하다(Phase 1 결론).",
+        "- λ_R*는 DMSR_φ(λ)의 수치 미분 peak에서 경험적으로 추정한다. "
+        "이 값은 Phase 3로 넘어가지 않으며 CIFAR에서 독립적으로 재추정한다.",
+        f"- 유의성 검정은 seed가 부족하면(현재 {config.num_seeds}개) 건너뛴다. "
+        "Phase 3에서 `--num-seeds 3` 이상으로 재실행하면 위 표가 채워진다.",
     ]
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -254,6 +395,8 @@ def save_summary_md(
 
 def run(config: ExperimentConfig, out_root: Path) -> Path:
     seed_everything(config.seed)
+    configure_backends()   # cudnn autotuner + TF32 (CUDA가 아니면 no-op)
+    print(f"[Phase 2] device={config.device}  amp={config.amp}  compile={config.compile_model}")
     run_id    = datetime.now().strftime("%Y%m%d_%H%M%S")
     d0, d1    = config.digits
     out_dir   = out_root / "phase2" / f"{run_id}_{config.run_name}_d{d0}v{d1}"
@@ -320,34 +463,60 @@ def run(config: ExperimentConfig, out_root: Path) -> Path:
             if config.n_generate > 0:
                 print(f"[Phase 2]   Generating {config.n_generate} samples...")
                 gen_imgs    = ddim_generate(model, config.n_generate, config)
-                fid         = compute_fid_phi(clf, real_imgs_fid, gen_imgs, config.eval_batch_size, config.device)
+                # φ 공간 생성 품질 일습(FID/KID/Precision/Recall/Density/Coverage).
+                # Phase 3와 동일한 gen_metrics 함수를 사용한다.
+                phi_metrics = compute_phi_metrics(clf, real_imgs_fid, gen_imgs,
+                                                  config.eval_batch_size, config.device)
                 clf_metrics = compute_classifier_metrics(clf, gen_imgs, config)
                 plot_sample_grid(spec.name, gen_imgs, plots_dir / f"samples_{spec.name}.png")
             else:
-                fid         = float("nan")
+                phi_metrics = {"fid_phi": float("nan"), "kid_phi": float("nan"),
+                               "kid_phi_std": float("nan"), "precision_phi": float("nan"),
+                               "recall_phi": float("nan"), "density_phi": float("nan"),
+                               "coverage_phi": float("nan")}
                 clf_metrics = {"classifier_confidence": float("nan"), "balance_error": float("nan"), "frac_class_0": float("nan")}
 
             row: dict = {
                 "schedule": spec.name, "seed": run_seed,
-                **cov, "fid_phi": fid, **clf_metrics,
+                **cov, **phi_metrics, **clf_metrics,
                 "mean_mse":       per_lam["mean_mse"],
                 "transition_mse": per_lam["transition_mse"],
                 "low_noise_mse":  per_lam["low_noise_mse"],
                 "high_noise_mse": per_lam["high_noise_mse"],
             }
             summary_rows.append(row)
-            print(f"[Phase 2]   FID={fid:.2f}  M={cov['coverage_m']:.4f}  mean_mse={per_lam['mean_mse']:.4f}")
+            print(f"[Phase 2]   FID={phi_metrics['fid_phi']:.2f}  KID={phi_metrics['kid_phi']:.4f}  "
+                  f"M={cov['coverage_m']:.4f}  mean_mse={per_lam['mean_mse']:.4f}")
 
-    # 7. Save artifacts
+    # 7. Statistical aggregation across seeds (통계 분석 틀)
+    #    - aggregate_over_seeds : schedule별 mean/std/sem/n 집계
+    #    - significance_tests   : baseline 대비 paired t-test/Wilcoxon (seed≥2일 때)
+    #    - aggregate_per_lambda : per-λ MSE 곡선의 seed 간 평균/표준편차
+    agg_rows  = aggregate_over_seeds(summary_rows)
+    sig_rows  = significance_tests(summary_rows, config.baseline_schedule, metric="fid_phi")
+    per_lambda_agg = aggregate_per_lambda(all_per_lambda)
+
+    # 8. Save artifacts
     (out_dir / "train_history.json").write_text(json.dumps(histories, indent=2), encoding="utf-8")
     save_metrics_csv(summary_rows, out_dir / "metrics_summary.csv")
     save_per_lambda_csv(all_per_lambda, out_dir / "per_lambda_metrics.csv")
-    save_summary_md(config, specs, summary_rows, dmsr_info, out_dir / "summary.md")
+    save_aggregated_csv(agg_rows, out_dir / "metrics_aggregated.csv")
+    save_significance_md(sig_rows, config.baseline_schedule, "fid_phi",
+                         config.num_seeds, out_dir / "significance.md")
+    (out_dir / "stats.json").write_text(json.dumps({
+        "baseline": config.baseline_schedule, "num_seeds": config.num_seeds,
+        "aggregated": agg_rows, "significance": sig_rows,
+        "per_lambda_aggregated": per_lambda_agg,
+    }, indent=2), encoding="utf-8")
+    save_summary_md(config, specs, summary_rows, agg_rows, sig_rows, dmsr_info,
+                    out_dir / "summary.md")
 
+    # 9. Plots
     plot_per_lambda_mse(all_per_lambda, config, trans_low, trans_high, lambda_r_star,
                         plots_dir / "per_lambda_mse.png")
     if config.n_generate > 0 and not any(math.isnan(r.get("fid_phi", float("nan"))) for r in summary_rows):
         plot_fid_summary(summary_rows, plots_dir / "fid_summary.png")
+        plot_fid_with_error_bars(agg_rows, plots_dir / "fid_mean_std.png")
         plot_coverage_tradeoff(summary_rows, plots_dir / "coverage_vs_fid.png")
 
     print(f"[Phase 2] Results saved to {out_dir}")
@@ -370,12 +539,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size",     type=int,   default=128)
     p.add_argument("--eval-grid-size", type=int,   default=40)
     p.add_argument("--seed",           type=int,   default=20260526)
-    p.add_argument("--num-seeds",      type=int,   default=1)
+    # num_seeds ≥ 3 으로 주면 seed 간 통계 집계·유의성 검정이 의미를 갖는다.
+    p.add_argument("--num-seeds",      type=int,   default=1,
+                   help="seed 반복 횟수. ≥3 이면 유의성 검정이 활성화된다.")
     p.add_argument("--device",         type=str,   default="auto",
                    help="'auto', 'cuda', 'mps', or 'cpu'.")
     p.add_argument("--ddim-steps",     type=int,   default=50)
     p.add_argument("--n-generate",     type=int,   default=5000)
-    p.add_argument("--gen-batch-size", type=int,   default=100)
+    p.add_argument("--gen-batch-size", type=int,   default=500)
+    # ── GPU 가속 옵션 ─────────────────────────────────────────────────────────
+    p.add_argument("--amp", choices=["auto", "bf16", "fp16", "fp32"], default="auto",
+                   help="혼합정밀. auto=CUDA면 bf16. 정확 재현이 필요하면 fp32.")
+    p.add_argument("--no-compile", action="store_true",
+                   help="torch.compile 비활성화(문제 발생 시).")
+    # 비교 schedule 구성 (Phase 3와 동일한 sweep 인자)
+    p.add_argument("--s-values",       type=float, nargs="+", default=None,
+                   help="DMSR-Normal의 폭 s 후보들 (예: --s-values 1.5 0.8 0.3).")
+    p.add_argument("--laplace-b",      type=float, default=0.5,
+                   help="DMSR-Laplace의 폭 b.")
+    p.add_argument("--baseline-schedule", type=str, default="cosine_vp",
+                   help="유의성 검정에서 기준이 되는 schedule 이름.")
     p.add_argument("--data-root",      type=str,   default="./data")
     p.add_argument("--out-root",       type=Path,  default=Path("results"))
     return p.parse_args()
@@ -403,6 +586,11 @@ def main() -> None:
         ddim_steps=args.ddim_steps,
         n_generate=args.n_generate,
         gen_batch_size=args.gen_batch_size,
+        amp=args.amp,
+        compile_model=not args.no_compile,
+        s_values=tuple(args.s_values) if args.s_values else (1.5, 0.8, 0.3),
+        laplace_b=args.laplace_b,
+        baseline_schedule=args.baseline_schedule,
         data_root=args.data_root,
     )
     run(config, args.out_root)

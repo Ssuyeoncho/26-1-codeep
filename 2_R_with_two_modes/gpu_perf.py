@@ -1,12 +1,17 @@
-"""Phase 2·3 공용 GPU 가속 유틸 (CUDA 서버, 예: RTX 4090).
+"""Phase 2·3 공용 GPU 가속 유틸 (CUDA 서버, 현재 = RTX 4090 / Ada Lovelace).
 
 여기 모인 설정들은 **모든 schedule·seed에 동일하게** 적용되는 '처리량(throughput)'
 옵션이라, schedule 간 비교의 공정성을 해치지 않는다(통제 요소로 고정). 학습 결과를
 좌우하는 hyperparameter(batch/lr/steps/seed/schedule)는 여기서 건드리지 않는다.
 
+GPU별 주의: bf16/TF32는 Ampere+ 전용이다. RTX 4090(Ada Lovelace, compute 8.9)은 둘 다
+지원하므로 resolve_amp("auto")가 bf16(GradScaler 불필요)을 고른다. 반대로 bf16 미지원
+GPU(예: Turing/2080 Ti)에서는 자동으로 fp16(+GradScaler)로 폴백하고 TF32 플래그는
+무시된다(켜 둬도 안전). 따라서 같은 코드가 Turing~Ada(및 이후) 모두에서 동작한다.
+
 제공 기능:
-  - configure_backends() : cudnn autotuner + TF32 활성화 (고정 입력 크기에 유리).
-  - resolve_amp()        : 혼합정밀(AMP) 설정 결정. 4090은 bf16을 지원하므로 기본 bf16.
+  - configure_backends() : cudnn autotuner + TF32 활성화 (Ampere+에서만 효과, Turing은 무시).
+  - resolve_amp()        : 혼합정밀(AMP) 설정 결정. bf16 미지원 GPU면 fp16으로 폴백.
   - autocast_ctx()       : AMP autocast 컨텍스트(또는 no-op).
   - make_grad_scaler()   : fp16일 때만 필요한 GradScaler(버전 호환 래퍼).
   - maybe_compile()      : torch.compile 시도(실패하면 eager로 안전 폴백).
@@ -40,7 +45,8 @@ def resolve_amp(device: str, precision: str = "auto") -> tuple[bool, torch.dtype
     """(autocast 사용여부, dtype, GradScaler 사용여부)를 반환한다.
 
     precision:
-      - "auto" : CUDA면 bf16(4090 지원), 아니면 fp32. bf16은 GradScaler 불필요.
+      - "auto" : CUDA + bf16 지원이면 bf16(Ampere+), bf16 미지원이면 fp16(Turing/2080 Ti),
+                 비CUDA면 fp32. bf16은 GradScaler 불필요, fp16은 필요.
       - "bf16" / "fp16" / "fp32" : 명시 지정.
     """
     if device != "cuda" or precision == "fp32":

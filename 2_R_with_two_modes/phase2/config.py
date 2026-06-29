@@ -60,29 +60,59 @@ class ExperimentConfig:
     num_seeds: int = 1
     device: str = "cpu"
 
-    # ── GPU 가속 (CUDA 서버용, 예: RTX 4090) ──────────────────────────────────
+    # ── GPU 가속 (CUDA 서버용, 현재 서버 = RTX 4090 / Ada Lovelace, 24GB) ──────
     # 모든 schedule에 동일하게 적용되는 처리량 옵션이라 비교 공정성에 영향 없음.
-    amp: str = "auto"             # 혼합정밀: auto(=CUDA면 bf16)/bf16/fp16/fp32
+    # 4090(Ada)은 bf16·TF32를 하드웨어로 지원하므로 auto가 bf16(GradScaler 불필요)을
+    # 고른다. (bf16 미지원 GPU에서는 auto가 fp16+GradScaler로 자동 폴백한다.)
+    amp: str = "auto"             # 혼합정밀: auto(=CUDA면 bf16, 미지원 시 fp16)/bf16/fp16/fp32
     # torch.compile은 nvcc 권한 등 환경 의존성이 있어 기본 OFF. 가능한 환경에서만 --compile로 켠다.
     compile_model: bool = False
 
     # ── DDIM 생성 (모든 schedule 공통·고정: EDM식 통제 설계) ──────────────────
     ddim_steps: int = 50
     n_generate: int = 5000
-    gen_batch_size: int = 500     # 생성 배치(학습과 무관, GPU 처리량용 — 4090이면 키워도 됨)
+    gen_batch_size: int = 500     # 생성 배치(학습과 무관, GPU 처리량용 — VRAM 여유 크면 키워도 됨)
     # DDIM 샘플링 λ 범위 (Phase 3와 공통). cosine 격자라 중앙에 step이 집중된다.
     ddim_lambda_min: float = -8.0
     ddim_lambda_max: float = 8.0
 
-    # ── 비교 schedule 구성 (Phase 3와 동일하게 유지) ──────────────────────────
-    # p_train(λ) = N(λ_R*, s²)에서 폭 s만 sweep하고, Laplace 변형도 함께 둔다.
-    # 변경되는 것은 오직 p_train(λ) 하나이며 나머지(loss weighting, sampler,
-    # 모델 구조, optimizer, steps)는 전부 고정한다는 통제 설계를 따른다.
-    # λ_R* 중심에서 폭 s를 좁게→넓게 sweep. 좁으면(0.3) 붕괴, 넓으면(4.0) 전 구간에
-    # 가까워진다. "얼마나 퍼뜨려야 잘 되는가(=데이터/이미지 크기 의존)"를 보기 위함.
-    s_values: tuple[float, ...] = (0.3, 0.8, 1.5, 2.5, 4.0)
-    laplace_b: float = 0.5
-    hang_laplace_b: float = 0.5     # Hang et al. baseline: λ=0 중심 Laplace
+    # ── 비교 schedule 구성: {Normal, Laplace} × {중심 0, 중심 λ_R*} × {폭 sweep} ──
+    # 통제 설계의 핵심. 같은 모양(Normal/Laplace)·같은 폭에서 **중심만** 0(=선행연구
+    # 류)과 λ_R*(=우리 것)로 바꿔 나란히 둠으로써 "중심 위치 효과"를 분리해 본다.
+    #   - center 0  : Laplace@0 = Hang et al. baseline. Normal@0 도 대조군으로 같이.
+    #   - center λ_R*: 데이터에서 추정한 전이점 중심 (우리 제안).
+    # 폭은 '확연히 차이나는' 값들로(모임↔퍼짐): 기본 0.5(좁음)/1.5(중간)/4.0(넓음).
+    # (변경되는 건 p_train(λ) 하나뿐, 나머지 학습 요소는 전부 고정.)
+    width_values: tuple[float, ...] = (0.5, 1.5, 4.0)   # Normal s / Laplace b 공통 폭 sweep
+    include_center0: bool = True    # 중심 0 대조군(Normal@0, Laplace@0=Hang) 포함 여부
+
+    # ── DMSR-Student-t: λ_R* 중심 + '꼬리가 끝까지 안 죽는' 무거운 꼬리 분포 ──────
+    # Normal은 꼬리가 exp(-x²)로 빨리 죽어 좁히면 clean끝을 못 뽑고 붕괴한다. Student-t는
+    # 중심은 뾰족하게 유지하면서 꼬리가 다항식으로 천천히 죽어(ν 작을수록 두꺼움) 좁은
+    # scale에서도 양 끝에 mass가 남는다 → "집중 + 전 구간 커버"를 한 분포로 달성.
+    # (ν=∞ → Normal, ν=1 → Cauchy. 기본 ν=3: 분산은 유한하되 Normal보다 확실히 두꺼운 꼬리.)
+    # cosine을 섞는 cosmix 대신 이 단일·자연 분포를 쓴다.
+    studentt_scales: tuple[float, ...] = (1.0, 2.5)   # 폭 sweep (Normal의 s와 같은 역할)
+    studentt_df: float = 3.0                          # 자유도 ν (꼬리 두께; 작을수록 두꺼움)
+
+    # ── (구) DMSR×cosine 혼합 schedule — 기본 OFF (--include-cosmix로만 켬) ───────
+    # (1-w)·cosine + w·N(λ_R*). cosine 의존이 부자연스러워 Student-t로 대체. 코드는 보존.
+    include_cosmix: bool = False
+    mix_weights: tuple[float, ...] = (0.5, 0.8)
+    mix_scale: float = 1.0
+
+    # ── 관행 baseline schedule (중심이 λ_R*가 아닌 '데이터 무관' 기준들) ─────────
+    # cosine_vp 는 항상 포함. 추가로 아래 둘을 켜고 끌 수 있다.
+    #   - linear : VP linear-β(DDPM/Song VP-SDE) schedule이 유도하는 λ 분포.
+    #   - uniform: λ 범위 전체에 균일(=아무 noise level도 선호 안 함)한 분포.
+    # 둘 다 λ_R* 정보를 안 쓰는 '관행/대조' 기준이라, DMSR 기반 schedule의 이득을
+    # 가늠하는 비교축이 된다.
+    include_linear: bool = True
+    include_uniform: bool = True
+    # VP linear-β schedule 파라미터(연속형 VP-SDE 표준값, Song et al. 2021).
+    linear_beta_min: float = 0.1
+    linear_beta_max: float = 20.0
+
     # 유의성 검정에서 다른 schedule들과 비교할 기준(baseline) schedule 이름.
     baseline_schedule: str = "cosine_vp"
 
@@ -97,5 +127,7 @@ class ScheduleSpec:
     name: str                       # 식별용 이름 (그래프·CSV에 그대로 사용)
     kind: str                       # 샘플러 종류 (sample_schedule에서 분기)
     center_lambda: float | None = None   # 중심 λ (DMSR 기반 schedule이면 λ_R*)
-    scale: float | None = None      # 폭 (Normal의 s, Laplace의 b)
+    scale: float | None = None      # 폭 (Normal의 s, Laplace의 b, Student-t의 scale, 혼합의 N 폭)
+    weight: float | None = None     # 혼합 비율 w (dmsr_cosine_mix에서 N 성분 비중)
+    df: float | None = None         # 자유도 ν (dmsr_studentt의 꼬리 두께)
     note: str = ""                  # 사람이 읽을 설명

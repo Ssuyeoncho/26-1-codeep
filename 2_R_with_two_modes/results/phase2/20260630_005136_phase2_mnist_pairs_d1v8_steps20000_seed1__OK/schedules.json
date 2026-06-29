@@ -1,0 +1,106 @@
+[
+  {
+    "name": "cosine_vp",
+    "kind": "cosine_vp",
+    "center_lambda": null,
+    "scale": null,
+    "weight": null,
+    "note": "VP cosine-\u03b2 induced \u03bb density (0-centered, heavy sech tails). \uad00\ud589 baseline."
+  },
+  {
+    "name": "linear_vp",
+    "kind": "linear_vp",
+    "center_lambda": null,
+    "scale": null,
+    "weight": null,
+    "note": "VP linear-\u03b2 (DDPM) induced \u03bb density. \uad00\ud589 baseline."
+  },
+  {
+    "name": "uniform",
+    "kind": "uniform",
+    "center_lambda": null,
+    "scale": null,
+    "weight": null,
+    "note": "Uniform(\u03bb\u2208[-10.0,10.0]). \ubb34\uc815\ubcf4 baseline."
+  },
+  {
+    "name": "hang_laplace_b0.5",
+    "kind": "hang_laplace_lambda",
+    "center_lambda": null,
+    "scale": 0.5,
+    "weight": null,
+    "note": "Laplace(0, b=0.5) \u2014 Hang et al. baseline."
+  },
+  {
+    "name": "dmsr_normal_s0.3",
+    "kind": "dmsr_normal",
+    "center_lambda": 0.2564102564102555,
+    "scale": 0.3,
+    "weight": null,
+    "note": "N(\u03bb_R*=0.256, s=0.3)."
+  },
+  {
+    "name": "dmsr_normal_s0.8",
+    "kind": "dmsr_normal",
+    "center_lambda": 0.2564102564102555,
+    "scale": 0.8,
+    "weight": null,
+    "note": "N(\u03bb_R*=0.256, s=0.8)."
+  },
+  {
+    "name": "dmsr_normal_s1.5",
+    "kind": "dmsr_normal",
+    "center_lambda": 0.2564102564102555,
+    "scale": 1.5,
+    "weight": null,
+    "note": "N(\u03bb_R*=0.256, s=1.5)."
+  },
+  {
+    "name": "dmsr_normal_s2.5",
+    "kind": "dmsr_normal",
+    "center_lambda": 0.2564102564102555,
+    "scale": 2.5,
+    "weight": null,
+    "note": "N(\u03bb_R*=0.256, s=2.5)."
+  },
+  {
+    "name": "dmsr_normal_s4.0",
+    "kind": "dmsr_normal",
+    "center_lambda": 0.2564102564102555,
+    "scale": 4.0,
+    "weight": null,
+    "note": "N(\u03bb_R*=0.256, s=4.0)."
+  },
+  {
+    "name": "dmsr_normal_s6.0",
+    "kind": "dmsr_normal",
+    "center_lambda": 0.2564102564102555,
+    "scale": 6.0,
+    "weight": null,
+    "note": "N(\u03bb_R*=0.256, s=6.0)."
+  },
+  {
+    "name": "dmsr_laplace_b0.5",
+    "kind": "dmsr_laplace",
+    "center_lambda": 0.2564102564102555,
+    "scale": 0.5,
+    "weight": null,
+    "note": "Laplace(\u03bb_R*=0.256, b=0.5)."
+  },
+  {
+    "name": "dmsr_cosmix_w0.5",
+    "kind": "dmsr_cosine_mix",
+    "center_lambda": 0.2564102564102555,
+    "scale": 1.0,
+    "weight": 0.5,
+    "note": "(1-0.5)\u00b7cosine + 0.5\u00b7N(\u03bb_R*=0.256, s=1.0)."
+  },
+  {
+    "name": "dmsr_cosmix_w0.8",
+    "kind": "dmsr_cosine_mix",
+    "center_lambda": 0.2564102564102555,
+    "scale": 1.0,
+    "weight": 0.8,
+    "note": "(1-0.8)\u00b7cosine + 0.8\u00b7N(\u03bb_R*=0.256, s=1.0)."
+  }
+]

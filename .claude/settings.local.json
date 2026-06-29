@@ -13,7 +13,26 @@
       "Bash(python3 -m py_compile gpu_perf.py)",
       "Bash(python3 -m py_compile gpu_perf.py stats_analysis.py gen_metrics.py phase2/*.py phase3/*.py)",
       "Bash(python3 -m py_compile gpu_perf.py phase3/experiment.py)",
-      "Bash(python3 -c \"import json;d=json.load\\(open\\('dmsr_info.json'\\)\\);print\\('lambda_r_star=',round\\(d['lambda_r_star'],3\\),'  T_R=[',round\\(d['transition_low'],3\\),',',round\\(d['transition_high'],3\\),']'\\)\")"
+      "Bash(python3 -c \"import json;d=json.load\\(open\\('dmsr_info.json'\\)\\);print\\('lambda_r_star=',round\\(d['lambda_r_star'],3\\),'  T_R=[',round\\(d['transition_low'],3\\),',',round\\(d['transition_high'],3\\),']'\\)\")",
+      "Bash(bash -n run_phase2.sh)",
+      "Bash(sed -n '90,115p' phase3/run.py)",
+      "Bash(sed -n '440,525p' phase3/run.py)",
+      "Bash(python3 -m py_compile stats_analysis.py phase2/experiment.py phase2/run.py)",
+      "Bash(python3 -m py_compile stats_analysis.py classification_metrics.py gpu_perf.py phase2/config.py phase2/experiment.py phase2/run.py phase3/run.py phase3/experiment.py)",
+      "Bash(python3 -)",
+      "Bash(bash -n run_phase3.sh)",
+      "Bash(bash -n run_all_pairs.sh)",
+      "Bash(python3 -c \"from phase3.config import CLASS_PAIRS; print\\('phase3 pairs:', CLASS_PAIRS\\)\")",
+      "Bash(python3 -m py_compile phase3/config.py phase3/experiment.py)",
+      "Bash(python3 -m py_compile phase3/config.py phase3/experiment.py phase3/run.py)",
+      "Bash(grep -n 'CIFAR_PAIRS=\\\\|PAIRS_PRESET=\\\\|--preset full\\\\|--preset \"$PAIRS_PRESET\"' run_phase3.sh)",
+      "Bash(sed -n '17,31p' phase3/config.py)",
+      "Bash(python3 -c \"import json; r=json.load\\(open\\('20260630_023946_phase3_cifar_cat_vs_dog_steps50000_seed1__FAILED_train:linear_vp:seed20260526/classifier_report.json'\\)\\); print\\(' accuracy: %.2f%%  macro-F1: %.3f  \\(test n=%d\\)'%\\(r['accuracy']*100, r['macro_f1'], r['n_samples']\\)\\)\")",
+      "Bash(bash -n run_phase3.sh run_phase2.sh)",
+      "Bash(python3 phase3/phase3_cifar_experiment.py --help)",
+      "Bash(python3 -m py_compile classification_metrics.py stats_analysis.py gpu_perf.py phase2/config.py phase2/experiment.py phase2/run.py phase3/config.py phase3/experiment.py phase3/run.py)",
+      "Bash(bash -n run_phase2.sh run_phase3.sh)",
+      "Bash(python3 phase2/phase2_mnist_experiment.py --help)"
     ]
   }
 }

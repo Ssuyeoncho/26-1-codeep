@@ -184,6 +184,69 @@ def significance_tests(
     return results
 
 
+def per_lambda_excess_and_skill(
+    per_lambda_agg: dict[str, dict],
+    baseline: str,
+    trivial_mse: float = 1.0,
+) -> dict[str, dict]:
+    """per-λ MSE 집계 곡선에 두 가지 분해 view를 더한다 (Phase 2·3 공용, 재실행 없음).
+
+    입력은 aggregate_per_lambda() 의 출력 {schedule: {lambda_grid, mse_mean, ...}}.
+    각 schedule에 다음을 채워 같은 구조로 돌려준다.
+
+    (1) excess_mean[λ] = mse_mean[λ] − mse_baseline[λ]
+        같은 λ에서 '이론상 최소(Bayes) MSE'는 데이터·λ에만 의존하므로 **모든 schedule이
+        공유**한다. 따라서 baseline과의 차분에서 그 미지의 floor가 소거되어, 남는 것은
+        순수하게 p_train 차이에 의한 '초과 손실'이다(실데이터엔 analytic Bayes가 없어
+        절대 excess는 못 구하지만, 차분으로는 honest하게 구할 수 있다). baseline은
+        excess_mean=0 이 된다. >0 이면 그 λ에서 baseline보다 못 배웠다는 뜻.
+
+    (2) skill_mean[λ] = 1 − mse_mean[λ]/trivial_mse
+        ε-prediction에서 best constant predictor(=0)의 MSE = Var(ε) = 1 이므로
+        trivial_mse=1 이 기본. skill=1 완벽, 0 trivial과 동급, <0 trivial보다 나쁨.
+        "U-Net이 각 noise 구간에서 실제로 학습됐는지"를 보여주는 bounded 지표(R²/skill score).
+    """
+    out: dict[str, dict] = {s: dict(v) for s, v in per_lambda_agg.items()}
+    base = per_lambda_agg.get(baseline)
+    base_mse = np.array(base["mse_mean"], dtype=float) if base is not None else None
+    for _s, v in out.items():
+        mse = np.array(v["mse_mean"], dtype=float)
+        v["skill_mean"] = (1.0 - mse / trivial_mse).tolist()
+        if base_mse is not None and base_mse.shape == mse.shape:
+            v["excess_mean"] = (mse - base_mse).tolist()
+        else:
+            v["excess_mean"] = [float("nan")] * len(mse)
+    return out
+
+
+def region_curve_mean(
+    lambda_grid: list[float] | np.ndarray,
+    values: list[float] | np.ndarray,
+    low: float,
+    high: float,
+    region: str = "transition",
+) -> float:
+    """λ 곡선을 구간별 스칼라로 요약한다 (transition / low_noise / high_noise).
+
+    region:
+      - "transition" : low ≤ λ ≤ high
+      - "low_noise"  : λ > high  (신호 강함)
+      - "high_noise" : λ < low   (잡음 강함)
+    """
+    grid = np.asarray(lambda_grid, dtype=float)
+    vals = np.asarray(values, dtype=float)
+    if region == "transition":
+        mask = (grid >= low) & (grid <= high)
+    elif region == "low_noise":
+        mask = grid > high
+    elif region == "high_noise":
+        mask = grid < low
+    else:
+        raise ValueError(f"unknown region: {region}")
+    finite = mask & np.isfinite(vals)
+    return float(vals[finite].mean()) if finite.any() else float("nan")
+
+
 def aggregate_per_lambda(all_per_lambda: list[dict]) -> dict[str, dict]:
     """per-λ denoising MSE 곡선을 schedule별로 seed에 걸쳐 집계한다.
 

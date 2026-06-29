@@ -105,25 +105,123 @@ def sample_schedule(spec: ScheduleSpec, n: int, cfg: ExperimentConfig, device: s
     if spec.kind == "cosine_vp":
         t = torch.rand(n, 1, device=device).clamp(eps, 1.0 - eps)
         return _clamp_lambda(-2.0 * torch.log(torch.tan(0.5 * math.pi * t)), cfg)
+    if spec.kind == "uniform":
+        lam = cfg.lambda_min + (cfg.lambda_max - cfg.lambda_min) * torch.rand(n, 1, device=device)
+        return _clamp_lambda(lam, cfg)
+    if spec.kind == "linear_vp":
+        # VP linear-β(DDPM): β(t)=β_min+t(β_max−β_min), t~U(0,1), λ=log(ᾱ/(1−ᾱ)).
+        t = torch.rand(n, 1, device=device)
+        log_abar = -(cfg.linear_beta_min * t + 0.5 * (cfg.linear_beta_max - cfg.linear_beta_min) * t * t)
+        abar = torch.exp(log_abar)
+        return _clamp_lambda(torch.log(abar / (1.0 - abar).clamp_min(1e-8)), cfg)
+    if spec.kind == "dmsr_studentt":
+        dist = torch.distributions.StudentT(spec.df, loc=spec.center_lambda, scale=spec.scale)
+        return _clamp_lambda(dist.sample((n, 1)).to(device), cfg)
+    if spec.kind == "dmsr_cosine_mix":
+        t = torch.rand(n, 1, device=device).clamp(eps, 1.0 - eps)
+        cos = -2.0 * torch.log(torch.tan(0.5 * math.pi * t))
+        nrm = spec.center_lambda + spec.scale * torch.randn(n, 1, device=device)
+        pick = torch.rand(n, 1, device=device) < spec.weight
+        return _clamp_lambda(torch.where(pick, nrm, cos), cfg)
     raise ValueError(f"Unknown schedule kind: {spec.kind!r}")
 
 
+# ── Analytic densities (smooth plotting of the designed p_train; Phase 2와 동일) ──
+
+def _normal_pdf(lam: np.ndarray, mu: float, s: float) -> np.ndarray:
+    return np.exp(-0.5 * ((lam - mu) / s) ** 2) / (s * math.sqrt(2.0 * math.pi))
+
+
+def _laplace_pdf(lam: np.ndarray, c: float, b: float) -> np.ndarray:
+    return np.exp(-np.abs(lam - c) / b) / (2.0 * b)
+
+
+def _cosine_vp_pdf(lam: np.ndarray) -> np.ndarray:
+    return 1.0 / (2.0 * math.pi * np.cosh(0.5 * lam))
+
+
+def _studentt_pdf(lam: np.ndarray, mu: float, sigma: float, nu: float) -> np.ndarray:
+    z = (lam - mu) / sigma
+    c = math.gamma((nu + 1.0) / 2.0) / (math.gamma(nu / 2.0) * math.sqrt(nu * math.pi) * sigma)
+    return c * (1.0 + z * z / nu) ** (-(nu + 1.0) / 2.0)
+
+
+def _linear_vp_pdf(lam: np.ndarray, cfg: ExperimentConfig, n: int = 8000) -> np.ndarray:
+    t = np.linspace(1e-6, 1.0 - 1e-6, n)
+    log_abar = -(cfg.linear_beta_min * t + 0.5 * (cfg.linear_beta_max - cfg.linear_beta_min) * t * t)
+    abar = np.exp(log_abar)
+    lam_t = np.log(abar / (1.0 - abar))
+    dens_t = 1.0 / np.abs(np.gradient(lam_t, t))
+    order = np.argsort(lam_t)
+    return np.interp(lam, lam_t[order], dens_t[order], left=0.0, right=0.0)
+
+
+def schedule_density(spec: ScheduleSpec, lam: np.ndarray, cfg: ExperimentConfig) -> np.ndarray:
+    """schedule의 해석적(설계된) 확률밀도 p_train(λ)를 λ 격자 위에서 반환한다."""
+    lam = np.asarray(lam, dtype=float)
+    k = spec.kind
+    if k == "dmsr_normal":
+        return _normal_pdf(lam, float(spec.center_lambda), float(spec.scale))
+    if k == "dmsr_laplace":
+        return _laplace_pdf(lam, float(spec.center_lambda), float(spec.scale))
+    if k == "hang_laplace":
+        return _laplace_pdf(lam, 0.0, float(spec.scale if spec.scale is not None else 0.5))
+    if k == "cosine_vp":
+        return _cosine_vp_pdf(lam)
+    if k == "dmsr_studentt":
+        return _studentt_pdf(lam, float(spec.center_lambda), float(spec.scale), float(spec.df))
+    if k == "dmsr_cosine_mix":
+        w = float(spec.weight)
+        return (1.0 - w) * _cosine_vp_pdf(lam) + w * _normal_pdf(lam, float(spec.center_lambda), float(spec.scale))
+    if k == "uniform":
+        d = cfg.lambda_max - cfg.lambda_min
+        return np.where((lam >= cfg.lambda_min) & (lam <= cfg.lambda_max), 1.0 / d, 0.0)
+    if k == "linear_vp":
+        return _linear_vp_pdf(lam, cfg)
+    raise ValueError(f"Unknown schedule kind for density: {k}")
+
+
 def build_schedules(lambda_r_star: float, cfg: ExperimentConfig) -> list[ScheduleSpec]:
+    """Phase 2와 동일한 schedule 집합 (이름 규칙 '중심_분포형태_폭')."""
     specs = [
         ScheduleSpec("cosine_vp", "cosine_vp",
-                     note="VP cosine schedule induced density."),
-        ScheduleSpec("hang_laplace_b0.5", "hang_laplace", scale=0.5,
-                     note="Laplace(0, 0.5) — Hang et al. baseline."),
+                     note="VP cosine-β induced λ density (0-centered, heavy sech tails). 관행 baseline."),
     ]
-    for s in cfg.s_values:
+    if cfg.include_linear:
+        specs.append(ScheduleSpec("linear_vp", "linear_vp",
+                     note="VP linear-β (DDPM) induced λ density. 관행 baseline."))
+    if cfg.include_uniform:
+        specs.append(ScheduleSpec("uniform", "uniform",
+                     note=f"Uniform(λ∈[{cfg.lambda_min},{cfg.lambda_max}]). 무정보 baseline."))
+    # ── Normal/Laplace × {중심 λ_R*, 중심 0} × 폭 sweep (중심 위치 통제비교) ──────
+    centers = [("dmsr", lambda_r_star)]
+    if cfg.include_center0:
+        centers.append(("at0", 0.0))
+    for cname, cval in centers:
+        ctxt = f"lambda_R*={lambda_r_star:.2f}" if cname == "dmsr" else "0"
+        for w in cfg.width_values:
+            specs.append(ScheduleSpec(
+                f"{cname}_normal_s{w}", "dmsr_normal",
+                center_lambda=cval, scale=w,
+                note=f"Normal(center={ctxt}, s={w})."))
+        for w in cfg.width_values:
+            hang = "  [Hang et al. baseline]" if cname == "at0" else ""
+            specs.append(ScheduleSpec(
+                f"{cname}_laplace_b{w}", "dmsr_laplace",
+                center_lambda=cval, scale=w,
+                note=f"Laplace(center={ctxt}, b={w}).{hang}"))
+    # DMSR-Student-t: λ_R* 중심 + 무거운 꼬리(끝까지 안 죽음). cosmix 대체.
+    for s in cfg.studentt_scales:
         specs.append(ScheduleSpec(
-            f"dmsr_normal_s{s}", "dmsr_normal",
-            center_lambda=lambda_r_star, scale=s,
-            note=f"N(lambda_R*={lambda_r_star:.2f}, s={s})."))
-    specs.append(ScheduleSpec(
-        f"dmsr_laplace_b{cfg.laplace_b}", "dmsr_laplace",
-        center_lambda=lambda_r_star, scale=cfg.laplace_b,
-        note=f"Laplace(lambda_R*={lambda_r_star:.2f}, b={cfg.laplace_b})."))
+            f"dmsr_studentt_s{s}", "dmsr_studentt",
+            center_lambda=lambda_r_star, scale=s, df=cfg.studentt_df,
+            note=f"Student-t(lambda_R*={lambda_r_star:.2f}, scale={s}, nu={cfg.studentt_df}) — heavy tails."))
+    if cfg.include_cosmix:
+        for w in cfg.mix_weights:
+            specs.append(ScheduleSpec(
+                f"dmsr_cosmix_w{w}", "dmsr_cosine_mix",
+                center_lambda=lambda_r_star, scale=cfg.mix_scale, weight=w,
+                note=f"(1-{w})·cosine + {w}·N(lambda_R*={lambda_r_star:.2f}, s={cfg.mix_scale})."))
     return specs
 
 
@@ -279,6 +377,27 @@ def eval_per_lambda_mse(
         pred = model(x_lam, lam)
         mse_vals.append(F.mse_loss(pred, eps).item())
     return lambda_grid, np.array(mse_vals)
+
+
+@torch.no_grad()
+def evaluate_classifier_predictions(
+    classifier: FeatureClassifier, cfg: ExperimentConfig, device: str, bs: int = 256
+) -> tuple[np.ndarray, np.ndarray]:
+    """φ 분류기를 테스트셋에서 평가해 (y_true, y_pred) 정수 레이블 배열을 반환한다.
+
+    정답 레이블이 있는 유일한 곳이라 Accuracy/Precision/Recall/F1/Confusion이 여기서만
+    정의된다. φ는 DMSR_φ·FID-φ의 기반이라 신뢰도 점검 목적(Phase 2와 동일).
+    """
+    ds = get_two_class_dataset(cfg, train=False)
+    loader = DataLoader(ds, batch_size=bs, shuffle=False, num_workers=cfg.num_workers)
+    classifier.eval()
+    preds: list[np.ndarray] = []
+    trues: list[np.ndarray] = []
+    for imgs, labels in loader:
+        logits = classifier(imgs.to(device))
+        preds.append(logits.argmax(1).cpu().numpy())
+        trues.append(labels.numpy())
+    return np.concatenate(trues).astype(int), np.concatenate(preds).astype(int)
 
 
 @torch.no_grad()

@@ -86,12 +86,6 @@ class ExperimentConfig:
     width_values: tuple[float, ...] = (0.5, 1.5, 4.0)   # Normal s / Laplace b 공통 폭 sweep
     include_center0: bool = True    # 중심 0 대조군(Normal@0, Laplace@0=Hang) 포함 여부
 
-    # ── (구) DMSR×cosine 혼합 schedule — 기본 OFF (--include-cosmix로만 켬) ───────
-    # (1-w)·cosine + w·N(λ_R*). 코드만 보존(기본 미사용).
-    include_cosmix: bool = False
-    mix_weights: tuple[float, ...] = (0.5, 0.8)
-    mix_scale: float = 1.0
-
     # ── 관행 baseline schedule (중심이 λ_R*가 아닌 '데이터 무관' 기준들) ─────────
     # cosine_vp 는 항상 포함. 추가로 아래 둘을 켜고 끌 수 있다.
     #   - linear : VP linear-β(DDPM/Song VP-SDE) schedule이 유도하는 λ 분포.
@@ -103,6 +97,14 @@ class ExperimentConfig:
     # VP linear-β schedule 파라미터(연속형 VP-SDE 표준값, Song et al. 2021).
     linear_beta_min: float = 0.1
     linear_beta_max: float = 20.0
+
+    # ── class-conditional + classifier-free guidance (CFG) ────────────────────
+    # 생성 품질용 표준 기법(Ho & Salimans 2022). 모든 schedule에 동일 적용이라 비교
+    # 공정성엔 영향 없음. 보편 관행값으로 둠 (Phase 3와 동일).
+    class_cond: bool = True          # 클래스(digit 0/1) 조건부 학습 + 샘플링 시 CFG
+    num_classes: int = 2
+    cond_dropout_prob: float = 0.1   # 학습 중 라벨을 null로 떨구는 비율(표준 0.1)
+    cfg_scale: float = 1.5           # guidance scale(표준 ~1.5)
 
     # 유의성 검정에서 다른 schedule들과 비교할 기준(baseline) schedule 이름.
     baseline_schedule: str = "cosine_vp"
@@ -118,6 +120,5 @@ class ScheduleSpec:
     name: str                       # 식별용 이름 (그래프·CSV에 그대로 사용)
     kind: str                       # 샘플러 종류 (sample_schedule에서 분기)
     center_lambda: float | None = None   # 중심 λ (DMSR 기반 schedule이면 λ_R*)
-    scale: float | None = None      # 폭 (Normal의 s, Laplace의 b, Student-t의 scale, 혼합의 N 폭)
-    weight: float | None = None     # 혼합 비율 w (dmsr_cosine_mix에서 N 성분 비중)
+    scale: float | None = None      # 폭 (Normal의 s, Laplace의 b)
     note: str = ""                  # 사람이 읽을 설명

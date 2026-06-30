@@ -114,12 +114,6 @@ def sample_schedule(spec: ScheduleSpec, n: int, cfg: ExperimentConfig, device: s
         log_abar = -(cfg.linear_beta_min * t + 0.5 * (cfg.linear_beta_max - cfg.linear_beta_min) * t * t)
         abar = torch.exp(log_abar)
         return _clamp_lambda(torch.log(abar / (1.0 - abar).clamp_min(1e-8)), cfg)
-    if spec.kind == "dmsr_cosine_mix":
-        t = torch.rand(n, 1, device=device).clamp(eps, 1.0 - eps)
-        cos = -2.0 * torch.log(torch.tan(0.5 * math.pi * t))
-        nrm = spec.center_lambda + spec.scale * torch.randn(n, 1, device=device)
-        pick = torch.rand(n, 1, device=device) < spec.weight
-        return _clamp_lambda(torch.where(pick, nrm, cos), cfg)
     raise ValueError(f"Unknown schedule kind: {spec.kind!r}")
 
 
@@ -159,9 +153,6 @@ def schedule_density(spec: ScheduleSpec, lam: np.ndarray, cfg: ExperimentConfig)
         return _laplace_pdf(lam, 0.0, float(spec.scale if spec.scale is not None else 0.5))
     if k == "cosine_vp":
         return _cosine_vp_pdf(lam)
-    if k == "dmsr_cosine_mix":
-        w = float(spec.weight)
-        return (1.0 - w) * _cosine_vp_pdf(lam) + w * _normal_pdf(lam, float(spec.center_lambda), float(spec.scale))
     if k == "uniform":
         d = cfg.lambda_max - cfg.lambda_min
         return np.where((lam >= cfg.lambda_min) & (lam <= cfg.lambda_max), 1.0 / d, 0.0)
@@ -199,12 +190,6 @@ def build_schedules(lambda_r_star: float, cfg: ExperimentConfig) -> list[Schedul
                 f"{cname}_laplace_b{w}", "dmsr_laplace",
                 center_lambda=cval, scale=w,
                 note=f"Laplace(center={ctxt}, b={w}).{hang}"))
-    if cfg.include_cosmix:
-        for w in cfg.mix_weights:
-            specs.append(ScheduleSpec(
-                f"dmsr_cosmix_w{w}", "dmsr_cosine_mix",
-                center_lambda=lambda_r_star, scale=cfg.mix_scale, weight=w,
-                note=f"(1-{w})·cosine + {w}·N(lambda_R*={lambda_r_star:.2f}, s={cfg.mix_scale})."))
     return specs
 
 
@@ -233,7 +218,8 @@ def train_one_schedule(
         loader_kwargs.update(persistent_workers=True, prefetch_factor=cfg.prefetch_factor)
     loader = DataLoader(ds, **loader_kwargs)
 
-    model = UNet(base_ch=cfg.base_ch, num_res_blocks=cfg.num_res_blocks).to(device)
+    n_cls = cfg.num_classes if cfg.class_cond else 0
+    model = UNet(base_ch=cfg.base_ch, num_res_blocks=cfg.num_res_blocks, num_classes=n_cls).to(device)
     ema = EMA(model, cfg.ema_decay)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
     history: list[dict[str, float]] = []
@@ -249,22 +235,30 @@ def train_one_schedule(
     micro_bs = max(1, min(micro_bs, cfg.batch_size))
 
     model.train()
-    for step, (imgs, _) in enumerate(_infinite(loader), start=1):
+    for step, (imgs, labels) in enumerate(_infinite(loader), start=1):
         if step > cfg.train_steps:
             break
         opt.zero_grad(set_to_none=True)
         loss_accum = 0.0
         chunks = list(imgs.split(micro_bs))
+        label_chunks = list(labels.split(micro_bs))
         batch_n = len(imgs)
-        for chunk in chunks:
+        for chunk, lbl in zip(chunks, label_chunks):
             chunk = chunk.to(device, non_blocking=True)
+            # class-conditional: 라벨을 주되 cond_dropout_prob 만큼 null로 떨군다(CFG 학습).
+            if n_cls > 0:
+                y = lbl.to(device, non_blocking=True).clone()
+                drop = torch.rand(len(y), device=device) < cfg.cond_dropout_prob
+                y[drop] = n_cls                              # null 토큰
+            else:
+                y = None
             lam = sample_schedule(spec, len(chunk), cfg, device)     # (B, 1)
             alpha, sigma = vp_alpha_sigma(lam)                       # (B, 1)
             eps = torch.randn_like(chunk)
             x_lam = alpha[:, :, None, None] * chunk + sigma[:, :, None, None] * eps
 
             with autocast_ctx(device, amp_on, amp_dtype):
-                pred_eps = fwd(x_lam, lam)
+                pred_eps = fwd(x_lam, lam, y)
                 raw_loss = F.mse_loss(pred_eps, eps)
                 loss = raw_loss * (len(chunk) / batch_n)
             loss_accum += float(raw_loss.detach().cpu()) * (len(chunk) / batch_n)
@@ -294,18 +288,20 @@ def train_one_schedule(
 # ── DDIM VP sampler ───────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def ddim_sample(model: UNet, n: int, cfg: ExperimentConfig, device: str) -> Tensor:
-    """Deterministic DDIM in VP lambda space (lambda_min → lambda_max).
+def ddim_sample(model: UNet, n: int, cfg: ExperimentConfig, device: str,
+                y: Tensor | None = None) -> Tensor:
+    """Deterministic DDIM in VP lambda space. class_cond이면 CFG로 샘플링한다.
 
-    생성도 학습과 동일한 AMP(autocast)로 forward 하여 처리량을 높인다(추론 전용이라
-    GradScaler는 불필요). 모든 schedule에 똑같이 적용되므로 비교 공정성에는 영향 없다.
+    CFG: eps = eps_uncond + w·(eps_cond − eps_uncond). 클래스 방향을 w(cfg_scale)만큼
+    강조해 더 또렷한 이미지를 얻는다(표준 기법). null 토큰 = num_classes 인덱스.
     """
-    # Phase 2와 동일한 공용 cosine 격자(중앙 집중). DMSR 분석 범위가 아니라
-    # ddim_lambda_min/max 를 쓴다.
     from ddim_grid import cosine_lambda_grid
     lam_seq = cosine_lambda_grid(cfg.ddim_steps, cfg.ddim_lambda_min, cfg.ddim_lambda_max)
     model.eval()
     amp_on, amp_dtype, _ = resolve_amp(device, cfg.amp)
+    use_cfg = (y is not None) and cfg.class_cond and (cfg.num_classes > 0)
+    if use_cfg:
+        null = torch.full_like(y, cfg.num_classes)
     x = torch.randn(n, 3, cfg.image_size, cfg.image_size, device=device)
 
     for i in range(cfg.ddim_steps):
@@ -317,7 +313,12 @@ def ddim_sample(model: UNet, n: int, cfg: ExperimentConfig, device: str) -> Tens
 
         lam_in = torch.full((n, 1), lam_s, device=device)
         with autocast_ctx(device, amp_on, amp_dtype):
-            eps_hat = model(x, lam_in)
+            if use_cfg:
+                eps_c = model(x, lam_in, y).float()
+                eps_u = model(x, lam_in, null).float()
+                eps_hat = eps_u + cfg.cfg_scale * (eps_c - eps_u)
+            else:
+                eps_hat = model(x, lam_in, y).float()
         eps_hat = eps_hat.float()                    # 이후 산술은 fp32로 안정적으로
         x0_hat = (x - s_s * eps_hat) / (a_s + 1e-8)
         x0_hat = x0_hat.clamp(-1.0, 1.0)
@@ -329,11 +330,18 @@ def ddim_sample(model: UNet, n: int, cfg: ExperimentConfig, device: str) -> Tens
 def generate_samples_batched(
     model: UNet, n: int, cfg: ExperimentConfig, device: str, bs: int | None = None
 ) -> Tensor:
+    """n장 생성. class_cond이면 두 클래스를 균형 있게(번갈아) 생성해 FID 표본을 맞춘다."""
     bs = bs if bs is not None else cfg.gen_batch_size
     out: list[Tensor] = []
+    done = 0
     for start in range(0, n, bs):
         b = min(bs, n - start)
-        out.append(ddim_sample(model, b, cfg, device).cpu())
+        if cfg.class_cond and cfg.num_classes > 0:
+            y = (torch.arange(done, done + b, device=device) % cfg.num_classes)  # 0,1,0,1… 균형
+        else:
+            y = None
+        out.append(ddim_sample(model, b, cfg, device, y=y).cpu())
+        done += b
     return torch.cat(out)
 
 
@@ -346,8 +354,10 @@ def eval_per_lambda_mse(
     ds = get_two_class_dataset(cfg, train=False)
     loader = DataLoader(ds, batch_size=cfg.eval_n_samples, shuffle=True,
                         num_workers=cfg.num_workers)
-    imgs, _ = next(iter(loader))
+    imgs, labels = next(iter(loader))
     imgs = imgs[:cfg.eval_n_samples].to(device)
+    # 학습이 conditional이므로 per-λ MSE도 진짜 라벨 조건으로 잰다(학습 task와 동일).
+    y = labels[:cfg.eval_n_samples].to(device) if (cfg.class_cond and cfg.num_classes > 0) else None
 
     lambda_grid = np.linspace(cfg.lambda_min, cfg.lambda_max, cfg.eval_grid_size)
     mse_vals: list[float] = []
@@ -357,7 +367,7 @@ def eval_per_lambda_mse(
         alpha, sigma = vp_alpha_sigma(lam)
         eps = torch.randn_like(imgs)
         x_lam = alpha[:, :, None, None] * imgs + sigma[:, :, None, None] * eps
-        pred = model(x_lam, lam)
+        pred = model(x_lam, lam, y)
         mse_vals.append(F.mse_loss(pred, eps).item())
     return lambda_grid, np.array(mse_vals)
 

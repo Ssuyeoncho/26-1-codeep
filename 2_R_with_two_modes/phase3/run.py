@@ -931,7 +931,9 @@ def _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize, max_new=
             if model_path.exists():
                 _stage(f"reeval:{tagk}")
                 print(f"\n  [re-eval saved model] {spec.name}  seed={run_seed}")
-                model = UNet(in_ch=3, base_ch=cfg.base_ch, num_res_blocks=cfg.num_res_blocks).to(device)
+                _ncls = cfg.num_classes if cfg.class_cond else 0
+                model = UNet(in_ch=3, base_ch=cfg.base_ch, num_res_blocks=cfg.num_res_blocks,
+                             num_classes=_ncls).to(device)
                 model.load_state_dict(torch.load(model_path, map_location=device))
                 model.eval()
                 history: list[dict] = []
@@ -1090,17 +1092,19 @@ def parse_args() -> argparse.Namespace:
                    help="VP linear-β baseline schedule을 빼고 실행.")
     p.add_argument("--no-uniform", dest="include_uniform", action="store_false",
                    help="uniform baseline schedule을 빼고 실행.")
-    p.add_argument("--include-cosmix", action="store_true",
-                   help="(구) DMSR×cosine 혼합 schedule도 추가(기본 OFF; Student-t로 대체됨).")
-    p.add_argument("--mix-weights", type=float, nargs="+", default=None,
-                   help="(--include-cosmix 일 때) 혼합 N 비율 w 후보들.")
-    p.add_argument("--mix-scale", type=float, default=1.0,
-                   help="(--include-cosmix 일 때) 혼합 N 폭.")
     p.set_defaults(include_linear=True, include_uniform=True)
     p.add_argument("--baseline-schedule", type=str, default="cosine_vp",
                    help="유의성 검정에서 기준이 되는 schedule 이름.")
     p.add_argument("--no-fid", action="store_true")
     p.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
+    # ── class-conditional + CFG ────────────────────────────────────────────────
+    p.add_argument("--no-cond", dest="class_cond", action="store_false",
+                   help="class-conditional+CFG 끄고 무조건부로 학습/생성.")
+    p.set_defaults(class_cond=True)
+    p.add_argument("--cfg-scale", type=float, default=None,
+                   help="classifier-free guidance scale (기본 1.5). 클수록 또렷·다양성↓.")
+    p.add_argument("--cond-dropout", type=float, default=None,
+                   help="학습 중 라벨을 null로 떨구는 비율 (기본 0.1).")
     # ── Resume (끊어 돌리기) ────────────────────────────────────────────────────
     p.add_argument("--resume", type=Path, default=None,
                    help="기존 결과 폴더를 이어서 실행. 끝난 schedule은 재사용하고 없는 것만 학습한다.")
@@ -1137,7 +1141,7 @@ def main() -> None:
         saved = json.loads((resume / "config.json").read_text(encoding="utf-8"))
         valid = {f.name for f in fields(ExperimentConfig)}
         base = {k: v for k, v in saved.items() if k in valid}
-        for tk in ("width_values", "mix_weights"):
+        for tk in ("width_values",):
             if isinstance(base.get(tk), list):
                 base[tk] = tuple(base[tk])
         base.update(device=device, num_workers=args.num_workers,
@@ -1149,6 +1153,8 @@ def main() -> None:
             base["micro_batch_size"] = args.micro_batch_size
         if args.clf_batch_size is not None:
             base["clf_batch_size"] = args.clf_batch_size
+        if args.cfg_scale is not None:
+            base["cfg_scale"] = args.cfg_scale
         cfg = ExperimentConfig(**base)
         print(f"[Phase 3] RESUME {resume.name}: steps={cfg.train_steps}, class={cfg.class_pair}, "
               f"widths={cfg.width_values}, max_new={args.max_new}")
@@ -1175,9 +1181,9 @@ def main() -> None:
         include_center0=args.include_center0,
         include_linear=args.include_linear,
         include_uniform=args.include_uniform,
-        include_cosmix=args.include_cosmix,
-        mix_weights=tuple(args.mix_weights) if args.mix_weights else (0.5, 0.8),
-        mix_scale=args.mix_scale,
+        class_cond=args.class_cond,
+        cfg_scale=args.cfg_scale if args.cfg_scale is not None else 1.5,
+        cond_dropout_prob=args.cond_dropout if args.cond_dropout is not None else 0.1,
         baseline_schedule=args.baseline_schedule,
         device=device,
         num_workers=args.num_workers,

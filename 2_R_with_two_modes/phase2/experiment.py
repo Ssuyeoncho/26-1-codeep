@@ -108,17 +108,6 @@ def sample_schedule(spec: ScheduleSpec, n: int, config: ExperimentConfig, device
         lam = torch.log(abar / (1.0 - abar).clamp_min(1e-8))
         return _clamp_lambda(lam, config)
 
-    if spec.kind == "dmsr_cosine_mix":
-        # (1-w)·cosine + w·N(λ_R*, scale²). 원소별로 동전을 던져 둘 중 하나에서 뽑는다.
-        assert (spec.center_lambda is not None and spec.scale is not None
-                and spec.weight is not None)
-        t   = torch.rand(n, 1, device=device).clamp(eps, 1.0 - eps)
-        cos = -2.0 * torch.log(torch.tan(0.5 * math.pi * t))          # cosine 성분
-        nrm = spec.center_lambda + spec.scale * torch.randn(n, 1, device=device)  # N 성분
-        pick_normal = torch.rand(n, 1, device=device) < spec.weight   # 비율 w로 N 선택
-        lam = torch.where(pick_normal, nrm, cos)
-        return _clamp_lambda(lam, config)
-
     raise ValueError(f"Unknown schedule kind: {spec.kind}")
 
 
@@ -171,9 +160,6 @@ def schedule_density(spec: ScheduleSpec, lam: np.ndarray, config: ExperimentConf
         return _laplace_pdf(lam, 0.0, float(spec.scale if spec.scale is not None else 0.5))
     if k == "cosine_vp":
         return _cosine_vp_pdf(lam)
-    if k == "dmsr_cosine_mix":
-        w = float(spec.weight)
-        return (1.0 - w) * _cosine_vp_pdf(lam) + w * _normal_pdf(lam, float(spec.center_lambda), float(spec.scale))
     if k == "uniform":
         d = config.lambda_max - config.lambda_min
         return np.where((lam >= config.lambda_min) & (lam <= config.lambda_max), 1.0 / d, 0.0)
@@ -194,7 +180,6 @@ def build_schedules(config: ExperimentConfig, lambda_r_star: float) -> list[Sche
       - dmsr_laplace_b{w}, at0_laplace_b{w}     : Laplace, 중심 λ_R* / 0  (at0_laplace = Hang et al.)
     추가:
       - cosine_vp / linear_vp / uniform         : 관행·무정보 baseline (중심 개념 없음)
-      - dmsr_cosmix_w{w}                         : (구) cosine 혼합, 기본 OFF
 
     폭 기호: Normal은 표준편차 s, Laplace는 scale b (분포가 달라 같은 글자로 안 묶음).
     """
@@ -226,14 +211,6 @@ def build_schedules(config: ExperimentConfig, lambda_r_star: float) -> list[Sche
                 f"{cname}_laplace_b{w}", "dmsr_laplace",
                 center_lambda=cval, scale=w,
                 note=f"Laplace(center={ctxt}, b={w}).{hang}"))
-
-    # ── (구) DMSR×cosine 혼합 — 기본 OFF. --include-cosmix 일 때만 ────────────────
-    if config.include_cosmix:
-        for w in config.mix_weights:
-            specs.append(ScheduleSpec(
-                f"dmsr_cosmix_w{w}", "dmsr_cosine_mix",
-                center_lambda=lambda_r_star, scale=config.mix_scale, weight=w,
-                note=f"(1-{w})·cosine + {w}·N(λ_R*={lambda_r_star:.3f}, s={config.mix_scale})."))
     return specs
 
 
@@ -242,12 +219,14 @@ def build_schedules(config: ExperimentConfig, lambda_r_star: float) -> list[Sche
 def train_one_schedule(
     spec: ScheduleSpec,
     train_imgs: Tensor,
+    train_labels: Tensor,
     config: ExperimentConfig,
     run_seed: int,
 ) -> tuple[MiniUNet, list[dict[str, float]]]:
     seed_everything(run_seed)
     device = config.device
-    model = MiniUNet(config.base_ch, config.time_emb_dim).to(device)
+    n_cls = config.num_classes if config.class_cond else 0
+    model = MiniUNet(config.base_ch, config.time_emb_dim, num_classes=n_cls).to(device)
     opt   = torch.optim.AdamW(model.parameters(), lr=config.lr)
     history: list[dict[str, float]] = []
     report_every = max(1, config.train_steps // 10)
@@ -255,6 +234,7 @@ def train_one_schedule(
     # MNIST two-class는 작아서 전체를 GPU에 한 번만 올려두면 매 스텝 host→device 복사가
     # 사라진다(GPU가 굶지 않음). 인덱스도 같은 device에서 뽑는다.
     train_imgs = train_imgs.to(device)
+    train_labels = train_labels.to(device)
     n_train = len(train_imgs)
 
     # ── GPU 가속: 혼합정밀(AMP) + torch.compile ───────────────────────────────
@@ -268,16 +248,25 @@ def train_one_schedule(
     for step in range(1, config.train_steps + 1):
         idx   = torch.randint(0, n_train, (config.batch_size,), device=device)
         x0    = train_imgs[idx]
+        y_all = train_labels[idx]
         opt.zero_grad(set_to_none=True)
         loss_accum = 0.0
         chunks = list(x0.split(micro_bs))
+        y_chunks = list(y_all.split(micro_bs))
         batch_n = len(x0)
-        for chunk in chunks:
+        for chunk, lbl in zip(chunks, y_chunks):
+            # class-conditional: 라벨을 주되 cond_dropout_prob 만큼 null로 떨군다(CFG 학습).
+            if n_cls > 0:
+                y = lbl.clone()
+                drop = torch.rand(len(y), device=device) < config.cond_dropout_prob
+                y[drop] = n_cls                              # null 토큰
+            else:
+                y = None
             lam = sample_schedule(spec, len(chunk), config, device)  # (B, 1)
             alpha, sigma = vp_alpha_sigma(lam.view(-1, 1, 1, 1))
             eps = torch.randn_like(chunk)
             with autocast_ctx(device, amp_on, amp_dtype):
-                pred_eps = fwd(alpha * chunk + sigma * eps, lam.view(-1))
+                pred_eps = fwd(alpha * chunk + sigma * eps, lam.view(-1), y)
                 raw_loss = F.mse_loss(pred_eps, eps)
                 loss = raw_loss * (len(chunk) / batch_n)
             loss_accum += float(raw_loss.detach().cpu()) * (len(chunk) / batch_n)
@@ -322,11 +311,21 @@ def ddim_generate(model: MiniUNet, n_samples: int, config: ExperimentConfig) -> 
     _, sigma_init_arr = vp_alpha_sigma_np(lam_sched[:1])
     sigma_init = float(sigma_init_arr[0])
 
+    use_cfg = config.class_cond and config.num_classes > 0
+
     all_imgs: list[Tensor] = []
     remaining = n_samples
+    done = 0
     while remaining > 0:
         bs = min(config.gen_batch_size, remaining)
         remaining -= bs
+
+        # class_cond이면 두 클래스를 균형 있게(번갈아) 생성 → FID 표본 분포를 맞춘다.
+        if use_cfg:
+            y = (torch.arange(done, done + bs, device=config.device) % config.num_classes)
+            null = torch.full_like(y, config.num_classes)
+        else:
+            y = None
 
         x = sigma_init * torch.randn(bs, 1, config.img_size, config.img_size, device=config.device)
 
@@ -341,12 +340,19 @@ def ddim_generate(model: MiniUNet, n_samples: int, config: ExperimentConfig) -> 
             a_n, s_n = float(a_n_arr[0]), float(s_n_arr[0])
 
             with autocast_ctx(config.device, amp_on, amp_dtype):
-                pred_eps = model(x, lam_t)
+                if use_cfg:
+                    # CFG: eps = eps_uncond + w·(eps_cond − eps_uncond)
+                    eps_c = model(x, lam_t, y).float()
+                    eps_u = model(x, lam_t, null).float()
+                    pred_eps = eps_u + config.cfg_scale * (eps_c - eps_u)
+                else:
+                    pred_eps = model(x, lam_t).float()
             pred_eps = pred_eps.float()                  # 이후 산술은 fp32로 안정적으로
             pred_x0  = ((x - sigma_c * pred_eps) / alpha_c.clamp_min(1e-8)).clamp(-1, 1)
             x = a_n * pred_x0 + s_n * pred_eps
 
         all_imgs.append(x.clamp(-1, 1).cpu())
+        done += bs
 
     return torch.cat(all_imgs, 0)[:n_samples]
 
@@ -357,6 +363,7 @@ def ddim_generate(model: MiniUNet, n_samples: int, config: ExperimentConfig) -> 
 def evaluate_per_lambda(
     model: MiniUNet,
     train_imgs: Tensor,
+    train_labels: Tensor,
     config: ExperimentConfig,
     transition_low: float,
     transition_high: float,
@@ -365,15 +372,18 @@ def evaluate_per_lambda(
     lambda_grid = np.linspace(config.lambda_min, config.lambda_max, config.eval_grid_size)
     per_lambda_mse: list[float] = []
     n = len(train_imgs)
+    n_cls = config.num_classes if config.class_cond else 0
 
     for lam_val in lambda_grid:
         idx   = torch.randint(0, n, (config.eval_batch_size,))
         x0    = train_imgs[idx].to(config.device)
+        # 학습이 conditional이면 per-λ MSE도 진짜 라벨 조건으로 잰다(학습 task와 동일).
+        y = train_labels[idx].to(config.device) if n_cls > 0 else None
         lam_t = torch.full((config.eval_batch_size,), lam_val, device=config.device)
         alpha = torch.sqrt(torch.sigmoid(lam_t)).view(-1, 1, 1, 1)
         sigma = torch.sqrt(torch.sigmoid(-lam_t)).view(-1, 1, 1, 1)
         eps   = torch.randn_like(x0)
-        pred_eps = model(alpha * x0 + sigma * eps, lam_t)
+        pred_eps = model(alpha * x0 + sigma * eps, lam_t, y)
         per_lambda_mse.append(F.mse_loss(pred_eps, eps).item())
 
     arr    = np.array(per_lambda_mse)

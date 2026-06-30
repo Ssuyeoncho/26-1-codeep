@@ -125,14 +125,19 @@ class ResBlock(nn.Module):
 class MiniUNet(nn.Module):
     """2-resolution-level U-Net for 28×28 MNIST. Pads input to 32×32 internally."""
 
-    def __init__(self, base_ch: int = 32, time_dim: int = 128) -> None:
+    def __init__(self, base_ch: int = 32, time_dim: int = 128, num_classes: int = 0) -> None:
         super().__init__()
         ch = base_ch
         self.time_dim = time_dim
+        self.num_classes = num_classes
         self.time_emb = nn.Sequential(
             nn.Linear(time_dim, time_dim * 4), nn.SiLU(),
             nn.Linear(time_dim * 4, time_dim),
         )
+        # class-conditional: 클래스 임베딩을 noise(시간) 임베딩에 더한다(표준 ADM/DiT 방식).
+        # 마지막 인덱스(num_classes)는 'null'(무조건부) 토큰 — CFG·label dropout용.
+        if num_classes > 0:
+            self.label_emb = nn.Embedding(num_classes + 1, time_dim)
         self.in_conv = nn.Conv2d(1, ch, 3, padding=1)
         self.enc0    = ResBlock(ch,     ch,     time_dim)           # (B, ch,  32,32) → skip
         self.down0   = nn.Conv2d(ch, ch, 3, stride=2, padding=1)   # (B, ch,  16,16)
@@ -143,9 +148,11 @@ class MiniUNet(nn.Module):
         self.out_norm = _groupnorm(ch)
         self.out_conv = nn.Conv2d(ch, 1, 3, padding=1)
 
-    def forward(self, x: Tensor, lam: Tensor) -> Tensor:
+    def forward(self, x: Tensor, lam: Tensor, y: Tensor | None = None) -> Tensor:
         lam_flat = lam.view(-1)
         t = self.time_emb(sinusoidal_embedding(lam_flat, self.time_dim))
+        if self.num_classes > 0 and y is not None:
+            t = t + self.label_emb(y.view(-1))
 
         x  = F.pad(x, (2, 2, 2, 2))                         # (B,1,28,28) → (B,1,32,32)
         h  = self.in_conv(x)                                 # (B, ch, 32,32)

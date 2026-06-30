@@ -795,9 +795,9 @@ def save_summary_md(
         "- KID는 표본이 적을 때 FID보다 신뢰성이 높고 부분표본 분산을 함께 준다.",
         "- `coverage_m`(transition 질량) 하나만으로 우수성을 말할 수 없으며, "
         "full-range support 와의 균형이 중요하다(Phase 1 결론).",
-        "- `dmsr_normal_s*`는 폭을 좁게→넓게 sweep한다. narrow는 clean끝을 못 배워 "
-        "붕괴하기 쉽고, 넓힐수록(또는 `dmsr_cosmix_w*`처럼 cosine을 섞어 full-range "
-        "support를 확보할수록) 회복하는지를 본다. Precision–Recall 그림으로 붕괴(좌하단) "
+        "- `*_normal_s*`/`*_laplace_b*`는 폭을 좁게→넓게 sweep한다. narrow는 clean끝을 "
+        "못 배워 붕괴하기 쉽고, 넓힐수록 회복하는지를 본다. 같은 폭에서 dmsr(중심 λ_R*)과 "
+        "at0(중심 0)을 비교해 중심 위치 효과를 본다. Precision–Recall 그림으로 붕괴(좌하단) "
         "여부를 확인하라.",
         "- λ_R*는 DMSR_φ(λ)의 수치 미분 peak에서 경험적으로 추정한다. "
         "이 값은 Phase 3로 넘어가지 않으며 CIFAR에서 독립적으로 재추정한다.",
@@ -993,10 +993,10 @@ def _run_body(config, out_dir, plots_dir, meta, _stage, _finalize) -> Path:
         for spec in specs:
             _stage(f"train:{spec.name}:seed{run_seed}")
             print(f"[Phase 2] Training {spec.name} (seed={run_seed})...")
-            model, history = train_one_schedule(spec, tr_imgs, config, run_seed)
+            model, history = train_one_schedule(spec, tr_imgs, tr_labels, config, run_seed)
             histories[f"{spec.name}_seed{run_seed}"] = history
 
-            per_lam = evaluate_per_lambda(model, tr_imgs, config, trans_low, trans_high)
+            per_lam = evaluate_per_lambda(model, tr_imgs, tr_labels, config, trans_low, trans_high)
             per_lam.update({"schedule": spec.name, "seed": run_seed})
             all_per_lambda.append(per_lam)
 
@@ -1127,17 +1127,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-center0",     dest="include_center0", action="store_false",
                    help="중심 0 대조군(Normal@0, Laplace@0=Hang)을 빼고 λ_R* 중심만 실행.")
     p.set_defaults(include_center0=True)
-    p.add_argument("--include-cosmix", action="store_true",
-                   help="(구) DMSR×cosine 혼합 schedule도 추가(기본 OFF; Student-t로 대체됨).")
-    p.add_argument("--mix-weights",    type=float, nargs="+", default=None,
-                   help="(--include-cosmix 일 때) 혼합의 N 비율 w 후보들 (예: --mix-weights 0.5 0.8).")
-    p.add_argument("--mix-scale",      type=float, default=1.0,
-                   help="(--include-cosmix 일 때) 혼합 schedule에 쓰는 N(λ_R*, ·)의 폭.")
     p.add_argument("--no-linear",      dest="include_linear", action="store_false",
                    help="VP linear-β baseline schedule을 빼고 실행.")
     p.add_argument("--no-uniform",     dest="include_uniform", action="store_false",
                    help="uniform baseline schedule을 빼고 실행.")
     p.set_defaults(include_linear=True, include_uniform=True)
+    # ── class-conditional + CFG (생성 품질용 표준 기법) ───────────────────────
+    p.add_argument("--no-cond",        dest="class_cond", action="store_false",
+                   help="class-conditional+CFG 끄고 무조건부로 학습/생성.")
+    p.set_defaults(class_cond=True)
+    p.add_argument("--cfg-scale",      type=float, default=1.5,
+                   help="classifier-free guidance scale (기본 1.5).")
+    p.add_argument("--cond-dropout",   type=float, default=0.1,
+                   help="학습 중 라벨을 null로 떨구는 비율 (기본 0.1).")
     p.add_argument("--baseline-schedule", type=str, default="cosine_vp",
                    help="유의성 검정에서 기준이 되는 schedule 이름.")
     p.add_argument("--run-name",       type=str,   default="phase2_mnist",
@@ -1174,9 +1176,9 @@ def main() -> None:
         compile_model=args.compile_model,
         width_values=tuple(args.width_values) if args.width_values else (0.5, 1.5, 4.0),
         include_center0=args.include_center0,
-        include_cosmix=args.include_cosmix,
-        mix_weights=tuple(args.mix_weights) if args.mix_weights else (0.5, 0.8),
-        mix_scale=args.mix_scale,
+        class_cond=args.class_cond,
+        cfg_scale=args.cfg_scale,
+        cond_dropout_prob=args.cond_dropout,
         include_linear=args.include_linear,
         include_uniform=args.include_uniform,
         baseline_schedule=args.baseline_schedule,

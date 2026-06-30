@@ -231,14 +231,20 @@ class Upsample(nn.Module):
 class UNet(nn.Module):
     """DDPM-style U-Net for 32×32 CIFAR. Epsilon-prediction."""
 
-    def __init__(self, in_ch: int = 3, base_ch: int = 64, num_res_blocks: int = 2) -> None:
+    def __init__(self, in_ch: int = 3, base_ch: int = 64, num_res_blocks: int = 2,
+                 num_classes: int = 0) -> None:
         super().__init__()
         emb_dim = base_ch * 4
         c0, c1, c2, c3 = base_ch, base_ch * 2, base_ch * 2, base_ch * 2
+        self.num_classes = num_classes
 
         self.lam_embed = nn.Sequential(
             nn.Linear(base_ch, emb_dim), nn.SiLU(), nn.Linear(emb_dim, emb_dim)
         )
+        # class-conditional: 클래스 임베딩을 noise(lam) 임베딩에 더한다(표준 ADM/DiT 방식).
+        # 마지막 인덱스(num_classes)는 'null'(무조건부) 토큰 — CFG·label dropout에 사용.
+        if num_classes > 0:
+            self.label_embed = nn.Embedding(num_classes + 1, emb_dim)
         self.init_conv = nn.Conv2d(in_ch, c0, 3, padding=1)
 
         self.enc0 = self._level(c0, c0, emb_dim, num_res_blocks, attn=False)
@@ -276,9 +282,11 @@ class UNet(nn.Module):
             h = b(h, emb) if isinstance(b, ResBlock) else b(h)
         return h
 
-    def forward(self, x: Tensor, lam: Tensor) -> Tensor:
+    def forward(self, x: Tensor, lam: Tensor, y: Tensor | None = None) -> Tensor:
         sin_emb = sinusoidal_embedding(lam.view(-1), self.lam_embed[0].in_features)
         emb = self.lam_embed(sin_emb)
+        if self.num_classes > 0 and y is not None:
+            emb = emb + self.label_embed(y.view(-1))
 
         h = self.init_conv(x)
         h = self._run(h, self.enc0, emb);      s32 = h

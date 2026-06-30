@@ -35,7 +35,10 @@
       "Bash(python3 phase2/phase2_mnist_experiment.py --help)",
       "Bash(python3 -c 'import json; c=json.load\\(open\\('\\\\''results/phase3/20260630_042431_phase3_cifar_cat_vs_dog_steps100000_seed1__FAILED_train:dmsr_laplace_b1.5:seed20260526/config.json'\\\\''\\)\\); print\\('\\\\''preset추정 train_steps:'\\\\'',c['\\\\''train_steps'\\\\''],'\\\\''| width_values:'\\\\'',c.get\\('\\\\''width_values'\\\\''\\),'\\\\''| include_linear:'\\\\'',c.get\\('\\\\''include_linear'\\\\''\\),'\\\\''| include_uniform:'\\\\'',c.get\\('\\\\''include_uniform'\\\\''\\),'\\\\''| include_center0:'\\\\'',c.get\\('\\\\''include_center0'\\\\''\\),'\\\\''| class_pair:'\\\\'',c['\\\\''class_pair'\\\\''],'\\\\''| n_gen:'\\\\'',c['\\\\''n_gen_samples'\\\\''],'\\\\''| studentt 키 있나:'\\\\'', any\\('\\\\''studentt'\\\\'' in k for k in c\\)\\)')",
       "Bash(python3 -m py_compile phase3/run.py)",
-      "Bash(grep -c studentt __TRACKED_VAR__/schedules.json)"
+      "Bash(grep -c studentt __TRACKED_VAR__/schedules.json)",
+      "Bash(python3 -m py_compile phase3/config.py phase3/models.py phase3/experiment.py phase3/run.py)",
+      "Bash(KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 python3 -)",
+      "Bash(python3 -c \"import dataclasses; from phase3.config import ExperimentConfig; c=ExperimentConfig\\(\\); print\\(' class_cond:',c.class_cond,'| num_classes:',c.num_classes,'| cfg_scale:',c.cfg_scale,'| cond_dropout:',c.cond_dropout_prob\\)\")"
     ]
   }
 }

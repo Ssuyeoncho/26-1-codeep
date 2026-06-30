@@ -1,0 +1,35 @@
+{
+  "status": "OK",
+  "stage": "plots",
+  "run_name": "phase2_mnist_pairs",
+  "digits": [
+    3,
+    8
+  ],
+  "train_steps": 20000,
+  "num_seeds": 1,
+  "device": "cuda",
+  "amp": "bf16",
+  "started_at": "2026-06-30 23:36:28",
+  "finished_at": "2026-07-01 00:00:30",
+  "duration_sec": 1441.8,
+  "error": null,
+  "n_schedules": 15,
+  "schedules": [
+    "cosine_vp",
+    "linear_vp",
+    "uniform",
+    "dmsr_normal_s0.5",
+    "dmsr_normal_s1.5",
+    "dmsr_normal_s4.0",
+    "dmsr_laplace_b0.5",
+    "dmsr_laplace_b1.5",
+    "dmsr_laplace_b4.0",
+    "at0_normal_s0.5",
+    "at0_normal_s1.5",
+    "at0_normal_s4.0",
+    "at0_laplace_b0.5",
+    "at0_laplace_b1.5",
+    "at0_laplace_b4.0"
+  ]
+}

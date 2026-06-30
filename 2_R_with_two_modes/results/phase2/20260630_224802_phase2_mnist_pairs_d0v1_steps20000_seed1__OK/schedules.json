@@ -1,0 +1,107 @@
+[
+  {
+    "name": "cosine_vp",
+    "kind": "cosine_vp",
+    "center_lambda": null,
+    "scale": null,
+    "note": "VP cosine-\u03b2 induced \u03bb density (0-centered, heavy sech tails). \uad00\ud589 baseline."
+  },
+  {
+    "name": "linear_vp",
+    "kind": "linear_vp",
+    "center_lambda": null,
+    "scale": null,
+    "note": "VP linear-\u03b2 (DDPM) induced \u03bb density. \uad00\ud589 baseline."
+  },
+  {
+    "name": "uniform",
+    "kind": "uniform",
+    "center_lambda": null,
+    "scale": null,
+    "note": "Uniform(\u03bb\u2208[-10.0,10.0]). \ubb34\uc815\ubcf4 baseline."
+  },
+  {
+    "name": "dmsr_normal_s0.5",
+    "kind": "dmsr_normal",
+    "center_lambda": -0.2564102564102573,
+    "scale": 0.5,
+    "note": "Normal(center=\u03bb_R*=-0.256, s=0.5)."
+  },
+  {
+    "name": "dmsr_normal_s1.5",
+    "kind": "dmsr_normal",
+    "center_lambda": -0.2564102564102573,
+    "scale": 1.5,
+    "note": "Normal(center=\u03bb_R*=-0.256, s=1.5)."
+  },
+  {
+    "name": "dmsr_normal_s4.0",
+    "kind": "dmsr_normal",
+    "center_lambda": -0.2564102564102573,
+    "scale": 4.0,
+    "note": "Normal(center=\u03bb_R*=-0.256, s=4.0)."
+  },
+  {
+    "name": "dmsr_laplace_b0.5",
+    "kind": "dmsr_laplace",
+    "center_lambda": -0.2564102564102573,
+    "scale": 0.5,
+    "note": "Laplace(center=\u03bb_R*=-0.256, b=0.5)."
+  },
+  {
+    "name": "dmsr_laplace_b1.5",
+    "kind": "dmsr_laplace",
+    "center_lambda": -0.2564102564102573,
+    "scale": 1.5,
+    "note": "Laplace(center=\u03bb_R*=-0.256, b=1.5)."
+  },
+  {
+    "name": "dmsr_laplace_b4.0",
+    "kind": "dmsr_laplace",
+    "center_lambda": -0.2564102564102573,
+    "scale": 4.0,
+    "note": "Laplace(center=\u03bb_R*=-0.256, b=4.0)."
+  },
+  {
+    "name": "at0_normal_s0.5",
+    "kind": "dmsr_normal",
+    "center_lambda": 0.0,
+    "scale": 0.5,
+    "note": "Normal(center=0, s=0.5)."
+  },
+  {
+    "name": "at0_normal_s1.5",
+    "kind": "dmsr_normal",
+    "center_lambda": 0.0,
+    "scale": 1.5,
+    "note": "Normal(center=0, s=1.5)."
+  },
+  {
+    "name": "at0_normal_s4.0",
+    "kind": "dmsr_normal",
+    "center_lambda": 0.0,
+    "scale": 4.0,
+    "note": "Normal(center=0, s=4.0)."
+  },
+  {
+    "name": "at0_laplace_b0.5",
+    "kind": "dmsr_laplace",
+    "center_lambda": 0.0,
+    "scale": 0.5,
+    "note": "Laplace(center=0, b=0.5).  [Hang et al. baseline]"
+  },
+  {
+    "name": "at0_laplace_b1.5",
+    "kind": "dmsr_laplace",
+    "center_lambda": 0.0,
+    "scale": 1.5,
+    "note": "Laplace(center=0, b=1.5).  [Hang et al. baseline]"
+  },
+  {
+    "name": "at0_laplace_b4.0",
+    "kind": "dmsr_laplace",
+    "center_lambda": 0.0,
+    "scale": 4.0,
+    "note": "Laplace(center=0, b=4.0).  [Hang et al. baseline]"
+  }
+]

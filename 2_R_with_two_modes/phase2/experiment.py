@@ -108,12 +108,6 @@ def sample_schedule(spec: ScheduleSpec, n: int, config: ExperimentConfig, device
         lam = torch.log(abar / (1.0 - abar).clamp_min(1e-8))
         return _clamp_lambda(lam, config)
 
-    if spec.kind == "dmsr_studentt":
-        # λ_R* 중심 Student-t(자유도 ν=df). 중심은 뾰족, 꼬리는 끝까지 안 죽는다.
-        assert spec.center_lambda is not None and spec.scale is not None and spec.df is not None
-        dist = torch.distributions.StudentT(spec.df, loc=spec.center_lambda, scale=spec.scale)
-        return _clamp_lambda(dist.sample((n, 1)).to(device), config)
-
     if spec.kind == "dmsr_cosine_mix":
         # (1-w)·cosine + w·N(λ_R*, scale²). 원소별로 동전을 던져 둘 중 하나에서 뽑는다.
         assert (spec.center_lambda is not None and spec.scale is not None
@@ -149,13 +143,6 @@ def _cosine_vp_pdf(lam: np.ndarray) -> np.ndarray:
     return 1.0 / (2.0 * math.pi * np.cosh(0.5 * lam))
 
 
-def _studentt_pdf(lam: np.ndarray, mu: float, sigma: float, nu: float) -> np.ndarray:
-    """Student-t(loc=μ, scale=σ, df=ν) 밀도. 중심 뾰족 + 다항식 꼬리(끝까지 안 죽음)."""
-    z = (lam - mu) / sigma
-    c = math.gamma((nu + 1.0) / 2.0) / (math.gamma(nu / 2.0) * math.sqrt(nu * math.pi) * sigma)
-    return c * (1.0 + z * z / nu) ** (-(nu + 1.0) / 2.0)
-
-
 def _linear_vp_pdf(lam: np.ndarray, config: ExperimentConfig, n: int = 8000) -> np.ndarray:
     """VP linear-β schedule의 λ 밀도. 닫힌형이 없어 변수변환을 수치적으로 계산한다.
 
@@ -184,8 +171,6 @@ def schedule_density(spec: ScheduleSpec, lam: np.ndarray, config: ExperimentConf
         return _laplace_pdf(lam, 0.0, float(spec.scale if spec.scale is not None else 0.5))
     if k == "cosine_vp":
         return _cosine_vp_pdf(lam)
-    if k == "dmsr_studentt":
-        return _studentt_pdf(lam, float(spec.center_lambda), float(spec.scale), float(spec.df))
     if k == "dmsr_cosine_mix":
         w = float(spec.weight)
         return (1.0 - w) * _cosine_vp_pdf(lam) + w * _normal_pdf(lam, float(spec.center_lambda), float(spec.scale))
@@ -209,7 +194,6 @@ def build_schedules(config: ExperimentConfig, lambda_r_star: float) -> list[Sche
       - dmsr_laplace_b{w}, at0_laplace_b{w}     : Laplace, 중심 λ_R* / 0  (at0_laplace = Hang et al.)
     추가:
       - cosine_vp / linear_vp / uniform         : 관행·무정보 baseline (중심 개념 없음)
-      - dmsr_studentt_s{w}                       : λ_R* 중심 + 무거운 꼬리 (집중+전구간 커버)
       - dmsr_cosmix_w{w}                         : (구) cosine 혼합, 기본 OFF
 
     폭 기호: Normal은 표준편차 s, Laplace는 scale b (분포가 달라 같은 글자로 안 묶음).
@@ -242,13 +226,6 @@ def build_schedules(config: ExperimentConfig, lambda_r_star: float) -> list[Sche
                 f"{cname}_laplace_b{w}", "dmsr_laplace",
                 center_lambda=cval, scale=w,
                 note=f"Laplace(center={ctxt}, b={w}).{hang}"))
-
-    # ── DMSR-Student-t: λ_R* 중심 + 무거운 꼬리(끝까지 안 죽음) ───────────────────
-    for w in config.studentt_scales:
-        specs.append(ScheduleSpec(
-            f"dmsr_studentt_s{w}", "dmsr_studentt",
-            center_lambda=lambda_r_star, scale=w, df=config.studentt_df,
-            note=f"Student-t(center=λ_R*={lambda_r_star:.3f}, scale={w}, nu={config.studentt_df}) — heavy tails."))
 
     # ── (구) DMSR×cosine 혼합 — 기본 OFF. --include-cosmix 일 때만 ────────────────
     if config.include_cosmix:

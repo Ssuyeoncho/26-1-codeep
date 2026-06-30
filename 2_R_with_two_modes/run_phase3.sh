@@ -48,15 +48,14 @@ CIFAR_PAIRS=("cat_vs_dog" "airplane_vs_frog" "deer_vs_horse" "airplane_vs_automo
 # CIFAR는 무거우므로 pairs 배치는 'fast' 프리셋(50k steps, FID 포함)으로 돈다.
 PAIRS_PRESET="fast"
 
-# pairs 배치는 full(17개) 대신 '중심 위치 통제비교'를 살린 핵심 10개만 돈다(폭 2개로 축소).
+# pairs 배치는 full(15개) 대신 '중심 위치 통제비교'를 살린 핵심 9개만 돈다(폭 2개로 축소).
 # 남기는 schedule:
 #   cosine_vp(baseline)
 #   + {Normal, Laplace} × {중심 λ_R*(dmsr), 중심 0(at0=Hang)} × 폭{0.5(좁음), 4.0(넓음)} = 8개
 #     → 같은 모양·폭에서 '중심만' 다를 때 성능 비교(우리 핵심 가설)
-#   + dmsr_studentt scale=1.0 (λ_R* 중심 + 무거운 꼬리 1개)
-# 빠지는 것: linear/uniform, 중간 폭 1.5, studentt 2.5.
-#   → 1쌍당 약 10 schedule × ~28분 ≈ 약 4.7시간 (Inception-FID 켜지면 +조금).
-LEAN_ARGS=(--no-linear --no-uniform --width-values 0.5 4.0 --studentt-scales 1.0)
+# 빠지는 것: linear/uniform, 중간 폭 1.5.
+#   → 1쌍당 약 9 schedule × ~28분 ≈ 약 4.2시간 (Inception-FID 켜지면 +조금).
+LEAN_ARGS=(--no-linear --no-uniform --width-values 0.5 4.0)
 
 case "$MODE" in
   smoke)
@@ -73,13 +72,13 @@ case "$MODE" in
     ;;
   pairs)
     # 2번째 인자부터 돌릴 쌍을 직접 지정할 수 있다. 없으면 기본 4쌍 전부.
-    #   bash run_phase3.sh pairs cat_vs_dog                    # 1쌍 (~4.7h)
-    #   bash run_phase3.sh pairs cat_vs_dog airplane_vs_frog   # 2쌍 (~9.5h)
-    #   bash run_phase3.sh pairs                               # 4쌍 전부 (~19h)
+    #   bash run_phase3.sh pairs cat_vs_dog                    # 1쌍 (~4.2h)
+    #   bash run_phase3.sh pairs cat_vs_dog airplane_vs_frog   # 2쌍 (~8.4h)
+    #   bash run_phase3.sh pairs                               # 4쌍 전부 (~17h)
     SEL_PAIRS=("${@:2}")
     if [[ ${#SEL_PAIRS[@]} -eq 0 ]]; then SEL_PAIRS=("${CIFAR_PAIRS[@]}"); fi
-    echo "[run_phase3] PAIRS BATCH (preset=$PAIRS_PRESET, lean 10 schedules) — ${#SEL_PAIRS[@]} pairs: ${SEL_PAIRS[*]}"
-    echo "[run_phase3] 예상: 약 4.7시간/쌍. 일부만 끝나도 각 쌍은 자체 폴더에 저장되어 보존된다."
+    echo "[run_phase3] PAIRS BATCH (preset=$PAIRS_PRESET, lean 9 schedules) — ${#SEL_PAIRS[@]} pairs: ${SEL_PAIRS[*]}"
+    echo "[run_phase3] 예상: 약 4.2시간/쌍. 일부만 끝나도 각 쌍은 자체 폴더에 저장되어 보존된다."
     FAILED=()
     for pair in "${SEL_PAIRS[@]}"; do
       echo ""
@@ -93,12 +92,26 @@ case "$MODE" in
     [[ ${#FAILED[@]} -gt 0 ]] && echo "[run_phase3] 실패한 쌍: ${FAILED[*]}"
     echo "[run_phase3] 결과: results/phase3/ (폴더명에 클래스쌍 이름 + __OK/__FAILED 로 구분)"
     ;;
+  resume)
+    # 기존 폴더를 이어서. 원래 설정(steps/width/class 등)은 폴더의 config.json에서 그대로
+    # 복원되므로 preset/쌍을 따로 안 줘도 된다. 장치/처리량(SAFE_ARGS)만 적용.
+    #   bash run_phase3.sh resume <folder>        # 남은 schedule 전부 이어서
+    #   bash run_phase3.sh resume <folder> 1      # 이번엔 새로 1개만 학습(끊어 돌리기)
+    RDIR="${2:-}"
+    if [[ -z "$RDIR" ]]; then echo "Usage: bash run_phase3.sh resume <folder> [max_new]"; exit 1; fi
+    MAXNEW="${3:-}"
+    EXTRA=()
+    [[ -n "$MAXNEW" ]] && EXTRA=(--max-new "$MAXNEW")
+    echo "[run_phase3] RESUME $(basename "$RDIR")  ${MAXNEW:+(이번에 새로 학습 최대 $MAXNEW개)}"
+    python3 "$SCRIPT" --device cuda --resume "$RDIR" "${SAFE_ARGS[@]}" "${EXTRA[@]}"
+    ;;
   *)
-    echo "Usage: bash run_phase3.sh [smoke|full|final|pairs] [class_pair_key ...]"
-    echo "  bash run_phase3.sh full cat_vs_dog                 # 단일 쌍, 13 schedules 전부"
-    echo "  bash run_phase3.sh pairs cat_vs_dog                # lean 7 schedules, 1쌍 (~3.3h)"
-    echo "  bash run_phase3.sh pairs cat_vs_dog airplane_vs_frog  # 2쌍 (~6.6h)"
-    echo "  bash run_phase3.sh pairs                           # 기본 4쌍 (~13h)"
+    echo "Usage: bash run_phase3.sh [smoke|full|final|pairs|resume] ..."
+    echo "  bash run_phase3.sh full cat_vs_dog                 # 단일 쌍, 15 schedules 전부"
+    echo "  bash run_phase3.sh pairs cat_vs_dog                # lean 9 schedules, 1쌍 (~4.2h)"
+    echo "  bash run_phase3.sh pairs cat_vs_dog airplane_vs_frog  # 2쌍 (~8.4h)"
+    echo "  bash run_phase3.sh pairs                           # 기본 4쌍 (~17h)"
+    echo "  bash run_phase3.sh resume <folder> [max_new]       # 끊긴 폴더 이어서(끝난 건 재사용)"
     exit 1
     ;;
 esac

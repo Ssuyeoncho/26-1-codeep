@@ -73,11 +73,7 @@ class ExperimentConfig:
     # 폭은 '확연히 차이나는' 값들로(모임↔퍼짐). Phase 2와 동일 구성.
     width_values: tuple[float, ...] = (0.5, 1.5, 4.0)   # Normal s / Laplace b 공통 폭 sweep
     include_center0: bool = True    # 중심 0 대조군(Normal@0, Laplace@0=Hang) 포함 여부
-    # DMSR-Student-t: λ_R* 중심 + 무거운 꼬리(ν=df). 좁은 scale에서도 끝까지 mass가 남아
-    # '집중 + 전 구간 커버'를 한 분포로 달성 (cosmix 대체). ν=1=Cauchy, ν=∞=Normal.
-    studentt_scales: tuple[float, ...] = (1.0, 2.5)
-    studentt_df: float = 3.0
-    # (구) DMSR×cosine 혼합 — 기본 OFF (--include-cosmix로만 켬). 코드는 보존.
+    # (구) DMSR×cosine 혼합 — 기본 OFF (--include-cosmix로만 켬). 코드만 보존.
     include_cosmix: bool = False
     mix_weights: tuple[float, ...] = (0.5, 0.8)
     mix_scale: float = 1.0
@@ -113,5 +109,4 @@ class ScheduleSpec:
     center_lambda: float | None = None
     scale: float | None = None
     weight: float | None = None     # 혼합 비율 w (dmsr_cosine_mix에서 N 성분 비중)
-    df: float | None = None         # 자유도 ν (dmsr_studentt의 꼬리 두께)
     note: str = ""

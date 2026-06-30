@@ -191,12 +191,8 @@ DMSR_φ(λ) = ‖μ_{φ,A}(λ) − μ_{φ,B}(λ)‖ / √((tr(Σ_{φ,A}(λ)) + t
 | `at0_normal_s{w}` | **0** | Normal | s=w | 대조: 중심 0 Normal (같은 폭) |
 | `dmsr_laplace_b{w}` | **λ_R\*** | Laplace | b=w | 우리: λ_R\* 중심 Laplace |
 | `at0_laplace_b{w}` | **0** | Laplace | b=w | 대조: 중심 0 Laplace = **Hang et al. baseline** |
-| `dmsr_studentt_s{w}` | λ_R\* | Student-t (ν=df) | scale=w | 꼬리가 끝까지 안 죽음(좁아도 전 구간 커버 + 집중) |
-| ~~`dmsr_cosmix_w{w}`~~ | — | (구) cosine 혼합 | — | 기본 OFF (`--include-cosmix`). Student-t로 대체 |
 
-**비교 축(읽는 법):** `dmsr_laplace_b1.5` ↔ `at0_laplace_b1.5` 처럼 **이름의 폭·모양이 같고 앞부분(dmsr/at0)만 다른 쌍**을 비교하면 "중심을 λ_R\*에 두는 것이 0보다 나은가?"가 바로 보인다. 폭은 `--width-values`로(기본 0.5/1.5/4.0, 모임↔퍼짐 확연히 차이), 중심 0 대조군 제외는 `--no-center0`.
-
-> **cosmix → Student-t 교체(2026-06-30):** cosine을 외부에서 빌려 섞는 게 부자연스러워, λ_R\* 중심 단일 분포면서 꼬리가 다항식으로 천천히 죽는 **Student-t**로 바꿨다. Normal(꼬리 exp(−x²))은 좁히면 clean끝을 못 뽑아 붕괴하지만, Student-t(ν=3 기본)는 같은 좁은 scale에서도 |λ|>3 영역에 ~19% mass를 남겨(Normal은 ~0.3%) **집중과 전 구간 커버를 한 분포로** 달성한다. ν로 꼬리 두께 조절(1=Cauchy, ∞=Normal). cosine 의존 없음.
+**비교 축(읽는 법):** `dmsr_laplace_b1.5` ↔ `at0_laplace_b1.5` 처럼 **이름의 폭·모양이 같고 앞부분(dmsr/at0)만 다른 쌍**을 비교하면 "중심을 λ_R\*에 두는 것이 0보다 나은가?"가 바로 보인다. 폭은 `--width-values`로(기본 0.5/1.5/4.0, 모임↔퍼짐 확연히 차이), 중심 0 대조군 제외는 `--no-center0`. 넓게 퍼진 케이스(전 구간 커버)는 wide Normal(s=4.0)·wide Laplace(b=4.0)·uniform·cosine/linear가 이미 충분히 담당한다.
 
 **왜 폭 기호가 b와 s로 다른가:** 둘 다 "퍼짐 정도"지만 **분포가 다릅니다**. Normal의 자연 모수는 표준편차 **s**(σ), Laplace의 자연 모수는 scale **b**(표준편차는 b√2). 같은 글자로 묶으면 같은 값이 같은 퍼짐을 뜻한다고 오해하므로 분포에 맞춰 다르게 씁니다.
 

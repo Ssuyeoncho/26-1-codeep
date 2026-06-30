@@ -86,17 +86,8 @@ class ExperimentConfig:
     width_values: tuple[float, ...] = (0.5, 1.5, 4.0)   # Normal s / Laplace b 공통 폭 sweep
     include_center0: bool = True    # 중심 0 대조군(Normal@0, Laplace@0=Hang) 포함 여부
 
-    # ── DMSR-Student-t: λ_R* 중심 + '꼬리가 끝까지 안 죽는' 무거운 꼬리 분포 ──────
-    # Normal은 꼬리가 exp(-x²)로 빨리 죽어 좁히면 clean끝을 못 뽑고 붕괴한다. Student-t는
-    # 중심은 뾰족하게 유지하면서 꼬리가 다항식으로 천천히 죽어(ν 작을수록 두꺼움) 좁은
-    # scale에서도 양 끝에 mass가 남는다 → "집중 + 전 구간 커버"를 한 분포로 달성.
-    # (ν=∞ → Normal, ν=1 → Cauchy. 기본 ν=3: 분산은 유한하되 Normal보다 확실히 두꺼운 꼬리.)
-    # cosine을 섞는 cosmix 대신 이 단일·자연 분포를 쓴다.
-    studentt_scales: tuple[float, ...] = (1.0, 2.5)   # 폭 sweep (Normal의 s와 같은 역할)
-    studentt_df: float = 3.0                          # 자유도 ν (꼬리 두께; 작을수록 두꺼움)
-
     # ── (구) DMSR×cosine 혼합 schedule — 기본 OFF (--include-cosmix로만 켬) ───────
-    # (1-w)·cosine + w·N(λ_R*). cosine 의존이 부자연스러워 Student-t로 대체. 코드는 보존.
+    # (1-w)·cosine + w·N(λ_R*). 코드만 보존(기본 미사용).
     include_cosmix: bool = False
     mix_weights: tuple[float, ...] = (0.5, 0.8)
     mix_scale: float = 1.0
@@ -129,5 +120,4 @@ class ScheduleSpec:
     center_lambda: float | None = None   # 중심 λ (DMSR 기반 schedule이면 λ_R*)
     scale: float | None = None      # 폭 (Normal의 s, Laplace의 b, Student-t의 scale, 혼합의 N 폭)
     weight: float | None = None     # 혼합 비율 w (dmsr_cosine_mix에서 N 성분 비중)
-    df: float | None = None         # 자유도 ν (dmsr_studentt의 꼬리 두께)
     note: str = ""                  # 사람이 읽을 설명

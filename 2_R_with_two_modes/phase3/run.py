@@ -5,7 +5,9 @@ import argparse
 import csv
 import json
 import os
-from dataclasses import asdict
+import re
+import zlib
+from dataclasses import asdict, fields
 from datetime import datetime
 from pathlib import Path
 
@@ -33,7 +35,7 @@ from .experiment import (
     eval_per_lambda_mse, gather_real_images, generate_samples_batched, sample_schedule,
     schedule_density, train_one_schedule,
 )
-from .models import resolve_device, seed_everything, train_classifier
+from .models import FeatureClassifier, UNet, resolve_device, seed_everything, train_classifier
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_ROOT = PROJECT_DIR / "results"
@@ -733,17 +735,48 @@ def _print_console_summary(cfg, clf_report, agg_rows, per_lambda_diag, out_dir) 
     print(bar + "\n")
 
 
-def run(cfg: ExperimentConfig, out_root: Path) -> Path:
-    """실험 실행. 폴더명에 실행시각+모드+종료상태(__RUNNING/__OK/__FAILED_<stage>)를 담고,
-    run_meta.json에 시작/종료/소요/단계/에러를 기록한다 (Phase 2와 동일)."""
+# ── Resume 지원 ─────────────────────────────────────────────────────────────────
+#
+# schedule 단위로 끊어 돌릴 수 있게 한다. 핵심: 각 schedule을 (seed, schedule이름)에 대해
+# **결정론적**으로 만들어, 한 번에 돌리든 여러 번에 나눠 돌리든 최종 결과가 동일하다.
+#   - 학습은 train_one_schedule이 seed_everything(run_seed)로 매번 재시드 → 순서 무관 결정론.
+#   - 평가/생성도 schedule별 고정 시드로 재시드 → 순서·resume 무관 결정론(_stable_eval_seed).
+#   - 끝난 schedule은 model_*.pt(가중치 그대로)와 sched_records/*.json(지표)를 재사용.
+
+def _stable_eval_seed(run_seed: int, name: str) -> int:
+    """(run_seed, schedule이름)에서 결정론적 평가 시드. 실행 순서·resume과 무관하게 고정."""
+    return (int(run_seed) * 1_000_003 + (zlib.crc32(name.encode("utf-8")) & 0xFFFFFFFF)) % (2 ** 31)
+
+
+def _sched_record_path(out_dir: Path, name: str, seed: int) -> Path:
+    return out_dir / "sched_records" / f"{name}_seed{seed}.json"
+
+
+def _strip_status(folder_name: str) -> str:
+    """폴더명 끝의 상태 접미사(__OK/__PARTIAL/__RUNNING/__FAILED...)를 떼어 base_name을 얻는다."""
+    return re.sub(r"__(OK|PARTIAL|RUNNING|FAILED).*$", "", folder_name)
+
+
+def run(cfg: ExperimentConfig, out_root: Path,
+        resume: Path | None = None, max_new: int | None = None) -> Path:
+    """실험 실행. 폴더명에 실행시각+모드+종료상태(__RUNNING/__OK/__PARTIAL/__FAILED_<stage>)를
+    담고, run_meta.json에 기록한다. resume이 주어지면 그 폴더를 이어서 진행한다."""
     seed_everything(cfg.seed)
     device = cfg.device
     configure_backends()
 
     start_dt = datetime.now()
-    run_id = start_dt.strftime("%Y%m%d_%H%M%S")
-    base_name = f"{run_id}_{cfg.run_name}_{cfg.class_pair}_steps{cfg.train_steps}_seed{cfg.num_seeds}"
-    out_dir = out_root / "phase3" / (base_name + "__RUNNING")
+    if resume is not None:
+        # 기존 폴더를 이어서: 폴더명에서 상태 접미사만 떼어 base_name으로 쓰고 in-place 진행.
+        out_dir = Path(resume)
+        if not out_dir.exists():
+            raise FileNotFoundError(f"--resume 경로가 없습니다: {out_dir}")
+        base_name = _strip_status(out_dir.name)
+        print(f"[Phase 3] RESUME from: {out_dir}")
+    else:
+        run_id = start_dt.strftime("%Y%m%d_%H%M%S")
+        base_name = f"{run_id}_{cfg.run_name}_{cfg.class_pair}_steps{cfg.train_steps}_seed{cfg.num_seeds}"
+        out_dir = out_root / "phase3" / (base_name + "__RUNNING")
     plots_dir = out_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
     # matplotlib 캐시 dir은 rename되는 out_dir 밖(out_root)에 둔다(rename 충돌 방지).
@@ -771,15 +804,16 @@ def run(cfg: ExperimentConfig, out_root: Path) -> Path:
         meta["finished_at"] = end_dt.strftime("%Y-%m-%d %H:%M:%S")
         meta["duration_sec"] = round((end_dt - start_dt).total_seconds(), 1)
         _write_run_meta(meta_path, meta)
-        suffix = "__OK" if status == "OK" else f"__FAILED_{meta['stage']}"
+        suffix = {"OK": "__OK", "PARTIAL": "__PARTIAL"}.get(status, f"__FAILED_{meta['stage']}")
         final_dir = out_dir.with_name(base_name + suffix)
-        if final_dir.exists():
+        if final_dir.exists() and final_dir != out_dir:
             final_dir = out_dir.with_name(base_name + suffix + f"_{end_dt.strftime('%H%M%S')}")
-        out_dir.rename(final_dir)
+        if final_dir != out_dir:
+            out_dir.rename(final_dir)
         return final_dir
 
     try:
-        return _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize)
+        return _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize, max_new)
     except BaseException as exc:  # noqa: BLE001 — 모든 중단을 폴더명에 남긴다
         meta["error"] = f"{type(exc).__name__}: {exc}"
         failed_dir = _finalize("FAILED")
@@ -787,17 +821,25 @@ def run(cfg: ExperimentConfig, out_root: Path) -> Path:
         raise
 
 
-def _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize) -> Path:
+def _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize, max_new=None) -> Path:
     print(f"\n=== Phase 3: {cfg.class_pair} | device={device} | amp={cfg.amp} "
           f"| compile={cfg.compile_model} ===")
     (out_dir / "config.json").write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")
     tag = _pair_tag(cfg)
 
-    # 1. Train classifier
-    _stage("train_classifier")
-    print("\n[1/6] Training feature classifier...")
-    classifier = train_classifier(cfg, device)
-    torch.save(classifier.state_dict(), out_dir / "classifier.pt")
+    # 1. 분류기 φ: 이미 학습돼 있으면(resume) 로드해 같은 λ_R*를 유지, 아니면 새로 학습.
+    clf_path = out_dir / "classifier.pt"
+    if clf_path.exists():
+        _stage("load_classifier")
+        print("\n[1/6] Loading existing classifier (resume)...")
+        classifier = FeatureClassifier(cfg.clf_feature_dim).to(device)
+        classifier.load_state_dict(torch.load(clf_path, map_location=device))
+        classifier.eval()
+    else:
+        _stage("train_classifier")
+        print("\n[1/6] Training feature classifier...")
+        classifier = train_classifier(cfg, device)
+        torch.save(classifier.state_dict(), clf_path)
 
     # 1b. φ 분류기 테스트셋 평가 (정답 레이블 있는 유일한 곳; Accuracy/Confusion/P/R/F1)
     _stage("eval_classifier")
@@ -813,16 +855,25 @@ def _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize) -> Path:
     plot_classification_report(clf_report, plots_dir / "classifier_pr_f1.png", pair_tag=tag)
     print(f"  phi classifier: acc={clf_report['accuracy']*100:.2f}%  macro-F1={clf_report['macro_f1']:.4f}")
 
-    # 2. Compute DMSR_phi
-    _stage("compute_dmsr")
-    print("\n[2/6] Computing empirical DMSR_phi(lambda)...")
-    lambda_grid, dmsr_vals, slope, t_low, lambda_r_star, t_high = compute_dmsr_phi(
-        classifier, cfg, device
-    )
+    # 2. DMSR_phi: 이미 계산돼 있으면(resume) 로드해 λ_R*를 그대로 유지(=저장된 모델들의
+    #    중심과 일치 보장), 아니면 새로 계산.
+    grid_p, vals_p, slope_p = (out_dir / "dmsr_grid.npy", out_dir / "dmsr_vals.npy",
+                               out_dir / "dmsr_slope.npy")
+    if grid_p.exists() and vals_p.exists() and slope_p.exists():
+        _stage("load_dmsr")
+        print("\n[2/6] Loading existing DMSR_phi (resume)...")
+        lambda_grid, dmsr_vals, slope = np.load(grid_p), np.load(vals_p), np.load(slope_p)
+        mask = slope >= cfg.rho * slope.max()
+        t_low = float(lambda_grid[mask][0]) if mask.any() else float(lambda_grid[0])
+        t_high = float(lambda_grid[mask][-1]) if mask.any() else float(lambda_grid[-1])
+        lambda_r_star = float(lambda_grid[np.argmax(slope)])
+    else:
+        _stage("compute_dmsr")
+        print("\n[2/6] Computing empirical DMSR_phi(lambda)...")
+        lambda_grid, dmsr_vals, slope, t_low, lambda_r_star, t_high = compute_dmsr_phi(
+            classifier, cfg, device)
+        np.save(grid_p, lambda_grid); np.save(vals_p, dmsr_vals); np.save(slope_p, slope)
     print(f"  lambda_R* = {lambda_r_star:.4f}  T_R = [{t_low:.4f}, {t_high:.4f}]")
-    np.save(out_dir / "dmsr_grid.npy", lambda_grid)
-    np.save(out_dir / "dmsr_vals.npy", dmsr_vals)
-    np.save(out_dir / "dmsr_slope.npy", slope)
     plot_dmsr_profile(lambda_grid, dmsr_vals, slope, t_low, lambda_r_star, t_high,
                       plots_dir / "dmsr_profile.png")
 
@@ -838,25 +889,64 @@ def _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize) -> Path:
     plot_schedule_densities(specs, cfg, t_low, lambda_r_star, t_high, device,
                              plots_dir / "schedule_densities.png")
 
-    # 4. Train + evaluate each schedule
+    # 4. 각 schedule 학습+평가. resume: 끝난 건 재사용, 없는 것만 학습(--max-new로 개수 제한).
     print("\n[4/6] Training diffusion models...")
+    records_dir = out_dir / "sched_records"
+    records_dir.mkdir(exist_ok=True)
     all_per_lambda: list[dict] = []
     summary_rows: list[dict] = []
     histories: dict[str, list[dict]] = {}
-
-    # φ-feature 기반 지표(FID/KID/PRDC)의 '진짜 분포' 쪽 표본을 한 번만 모아 재사용
-    real_imgs_phi = gather_real_images(cfg, device, cfg.n_gen_samples)
+    real_imgs_phi = None    # φ-FID용 진짜 표본 — 처음 필요할 때만 한 번 로드
+    new_trained = 0
+    pending: list[str] = []   # 이번에 못 끝낸(아직 학습 안 된) schedule
 
     for seed_idx in range(cfg.num_seeds):
         run_seed = cfg.seed + seed_idx
         for spec in specs:
-            _stage(f"train:{spec.name}:seed{run_seed}")
-            print(f"\n  Schedule: {spec.name}  seed={run_seed}")
-            model, ema, history = train_one_schedule(spec, cfg, device, run_seed)
-            histories[f"{spec.name}_seed{run_seed}"] = history
+            tagk = f"{spec.name}_seed{run_seed}"
+            rec_path = _sched_record_path(out_dir, spec.name, run_seed)
+            model_path = out_dir / f"model_{spec.name}_seed{run_seed}.pt"
 
-            ema.copy_to(model)
-            model.eval()
+            # (a) 결과 record가 있으면 통째로 재사용 (재평가도 불필요) → 결과 동일 보장
+            if rec_path.exists():
+                blob = json.loads(rec_path.read_text(encoding="utf-8"))
+                rec = blob["rec"]
+                histories[tagk] = blob.get("history", [])
+                all_per_lambda.append(rec)
+                summary_rows.append({k: v for k, v in rec.items() if not isinstance(v, list)})
+                print(f"  [reuse record] {spec.name}  seed={run_seed}")
+                continue
+
+            # 학습이 필요한데 이번 실행 예산(--max-new)을 다 썼으면 다음 resume으로 미룸
+            need_train = not model_path.exists()
+            if need_train and max_new is not None and new_trained >= max_new:
+                pending.append(tagk)
+                print(f"  [defer] {spec.name}  seed={run_seed} (max-new={max_new} 도달 → 다음 resume에서)")
+                continue
+
+            if real_imgs_phi is None:
+                real_imgs_phi = gather_real_images(cfg, device, cfg.n_gen_samples)
+
+            # (b) 가중치만 있으면(이전 run에서 학습 완료) 로드해 재평가 / (c) 없으면 새로 학습
+            if model_path.exists():
+                _stage(f"reeval:{tagk}")
+                print(f"\n  [re-eval saved model] {spec.name}  seed={run_seed}")
+                model = UNet(in_ch=3, base_ch=cfg.base_ch, num_res_blocks=cfg.num_res_blocks).to(device)
+                model.load_state_dict(torch.load(model_path, map_location=device))
+                model.eval()
+                history: list[dict] = []
+            else:
+                _stage(f"train:{tagk}")
+                print(f"\n  Schedule: {spec.name}  seed={run_seed}")
+                model, ema, history = train_one_schedule(spec, cfg, device, run_seed)
+                ema.copy_to(model)
+                model.eval()
+                torch.save(model.state_dict(), model_path)
+                new_trained += 1
+            histories[tagk] = history
+
+            # 평가/생성은 schedule별 고정 시드로 재시드 → resume·순서와 무관하게 결과 동일
+            seed_everything(_stable_eval_seed(run_seed, spec.name))
 
             print("  Evaluating per-lambda MSE...")
             lam_g, per_mse = eval_per_lambda_mse(model, cfg, device)
@@ -874,14 +964,11 @@ def _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize) -> Path:
             print("  Classifier confidence...")
             clf_conf, bal_err = eval_classifier_confidence(classifier, gen_imgs, device)
 
-            # 헤드라인 지표: InceptionV3 기반 FID(CIFAR 표준)
             fid_inception = float("nan")
             if cfg.compute_fid:
                 print("  Inception-FID...")
                 fid_inception = compute_fid(gen_imgs, cfg, device)
 
-            # 보조·일관 비교축: φ 공간 FID/KID/Precision/Recall/Density/Coverage
-            # (Phase 2와 동일한 gen_metrics 함수 — 두 phase를 같은 정의로 잇는다)
             print("  phi-space metrics (FID/KID/PRDC)...")
             phi_metrics = compute_phi_metrics(classifier, real_imgs_phi, gen_imgs, device)
 
@@ -900,7 +987,6 @@ def _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize) -> Path:
                 "balance_error": bal_err,
                 "coverage_m": m, "expected_s": s,
                 "mean_mse": mean_mse, "transition_mse": transition_mse,
-                # skill = 1 - MSE (trivial eps-hat=0 -> MSE=1). U-Net 학습 정도(R^2/skill).
                 "mean_skill": 1.0 - mean_mse,
                 "transition_skill": 1.0 - transition_mse,
                 "transition_low": t_low, "lambda_r_star": lambda_r_star,
@@ -910,7 +996,13 @@ def _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize) -> Path:
             }
             all_per_lambda.append(rec)
             summary_rows.append({k: v for k, v in rec.items() if not isinstance(v, list)})
-            torch.save(model.state_dict(), out_dir / f"model_{spec.name}_seed{run_seed}.pt")
+            # 결과 record를 즉시 저장 → 다음에 끊겨도 이 schedule은 재학습 불필요
+            rec_path.write_text(json.dumps({"rec": rec, "history": history},
+                                           ensure_ascii=False), encoding="utf-8")
+
+    # 4b. 모든 schedule이 끝났는지 판정 (resume/끊어돌리기 상태)
+    total_expected = cfg.num_seeds * len(specs)
+    all_done = (len(summary_rows) == total_expected) and not pending
 
     # 5. Statistical aggregation across seeds (Phase 2와 동일한 공용 통계 틀)
     #    헤드라인 지표(Inception-FID)에 대해 baseline 대비 paired 유의성을 검정한다.
@@ -961,8 +1053,12 @@ def _run_body(cfg, out_dir, plots_dir, device, meta, _stage, _finalize) -> Path:
     plot_precision_recall(summary_rows, plots_dir / "precision_recall.png", pair_tag=tag)
     plot_metric_overview(agg_rows, plots_dir / "metric_overview.png", pair_tag=tag)
 
-    final_dir = _finalize("OK")
-    print(f"\n[Phase 3] OK ({meta['duration_sec']}s) -> {final_dir}")
+    final_dir = _finalize("OK" if all_done else "PARTIAL")
+    if all_done:
+        print(f"\n[Phase 3] OK ({meta['duration_sec']}s) -> {final_dir}")
+    else:
+        print(f"\n[Phase 3] PARTIAL — {len(summary_rows)}/{total_expected} schedules done -> {final_dir}")
+        print(f"  이어서 하려면: bash run_phase3.sh resume \"{final_dir.name}\"")
     _print_console_summary(cfg, clf_report, agg_rows, per_lambda_diag, final_dir)
     return final_dir
 
@@ -990,10 +1086,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-center0", dest="include_center0", action="store_false",
                    help="중심 0 대조군(Normal@0, Laplace@0=Hang)을 빼고 λ_R* 중심만 실행.")
     p.set_defaults(include_center0=True)
-    p.add_argument("--studentt-scales", type=float, nargs="+", default=None,
-                   help="DMSR-Student-t(λ_R* 중심, 무거운 꼬리) 폭 sweep (예: --studentt-scales 1.0 2.5).")
-    p.add_argument("--studentt-df", type=float, default=3.0,
-                   help="Student-t 자유도 ν (꼬리 두께; 작을수록 두꺼움, 1=Cauchy, ∞=Normal).")
     p.add_argument("--no-linear", dest="include_linear", action="store_false",
                    help="VP linear-β baseline schedule을 빼고 실행.")
     p.add_argument("--no-uniform", dest="include_uniform", action="store_false",
@@ -1009,6 +1101,11 @@ def parse_args() -> argparse.Namespace:
                    help="유의성 검정에서 기준이 되는 schedule 이름.")
     p.add_argument("--no-fid", action="store_true")
     p.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
+    # ── Resume (끊어 돌리기) ────────────────────────────────────────────────────
+    p.add_argument("--resume", type=Path, default=None,
+                   help="기존 결과 폴더를 이어서 실행. 끝난 schedule은 재사용하고 없는 것만 학습한다.")
+    p.add_argument("--max-new", type=int, default=None,
+                   help="이번 실행에서 새로 '학습'할 schedule 최대 개수(끊어 돌리기용). 미지정=전부.")
     # ── GPU 가속 옵션 ─────────────────────────────────────────────────────────
     p.add_argument("--num-workers", type=int, default=4,
                    help="DataLoader 병렬 워커 수 (서버 CPU 코어에 맞춰 조정).")
@@ -1025,6 +1122,38 @@ def main() -> None:
     args = parse_args()
     device = resolve_device(args.device)
     print(f"[Phase 3] Using device: {device}")
+
+    # ── Resume: 폴더의 config.json을 그대로 복원해 이어간다 ───────────────────────
+    # (원래 run과 동일한 train_steps/width/class 등 보장. 제거된 옛 키(studentt 등)는 무시.
+    #  장치/처리량 인자만 현재 CLI 값으로 덮어쓴다 — 결과엔 영향 없음.)
+    if args.resume is not None:
+        resume = args.resume
+        if not resume.exists():
+            cand = args.out_root / "phase3" / resume.name
+            if cand.exists():
+                resume = cand
+        if not resume.exists():
+            raise FileNotFoundError(f"--resume 경로를 찾을 수 없습니다: {args.resume}")
+        saved = json.loads((resume / "config.json").read_text(encoding="utf-8"))
+        valid = {f.name for f in fields(ExperimentConfig)}
+        base = {k: v for k, v in saved.items() if k in valid}
+        for tk in ("width_values", "mix_weights"):
+            if isinstance(base.get(tk), list):
+                base[tk] = tuple(base[tk])
+        base.update(device=device, num_workers=args.num_workers,
+                    prefetch_factor=args.prefetch_factor, amp=args.amp,
+                    compile_model=args.compile_model, data_root=str(PROJECT_DIR / "data"))
+        if args.gen_batch_size is not None:
+            base["gen_batch_size"] = args.gen_batch_size
+        if args.micro_batch_size is not None:
+            base["micro_batch_size"] = args.micro_batch_size
+        if args.clf_batch_size is not None:
+            base["clf_batch_size"] = args.clf_batch_size
+        cfg = ExperimentConfig(**base)
+        print(f"[Phase 3] RESUME {resume.name}: steps={cfg.train_steps}, class={cfg.class_pair}, "
+              f"widths={cfg.width_values}, max_new={args.max_new}")
+        run(cfg, args.out_root, resume=resume, max_new=args.max_new)
+        return
 
     preset = PRESETS[args.preset]
     cfg = ExperimentConfig(
@@ -1044,8 +1173,6 @@ def main() -> None:
         num_seeds=args.num_seeds if args.num_seeds is not None else preset["num_seeds"],
         width_values=tuple(args.width_values) if args.width_values else (0.5, 1.5, 4.0),
         include_center0=args.include_center0,
-        studentt_scales=tuple(args.studentt_scales) if args.studentt_scales else (1.0, 2.5),
-        studentt_df=args.studentt_df,
         include_linear=args.include_linear,
         include_uniform=args.include_uniform,
         include_cosmix=args.include_cosmix,
@@ -1059,7 +1186,7 @@ def main() -> None:
         compile_model=args.compile_model,
         data_root=str(PROJECT_DIR / "data"),
     )
-    run(cfg, args.out_root)
+    run(cfg, args.out_root, resume=None, max_new=args.max_new)
 
 
 if __name__ == "__main__":

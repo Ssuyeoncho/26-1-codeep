@@ -114,9 +114,6 @@ def sample_schedule(spec: ScheduleSpec, n: int, cfg: ExperimentConfig, device: s
         log_abar = -(cfg.linear_beta_min * t + 0.5 * (cfg.linear_beta_max - cfg.linear_beta_min) * t * t)
         abar = torch.exp(log_abar)
         return _clamp_lambda(torch.log(abar / (1.0 - abar).clamp_min(1e-8)), cfg)
-    if spec.kind == "dmsr_studentt":
-        dist = torch.distributions.StudentT(spec.df, loc=spec.center_lambda, scale=spec.scale)
-        return _clamp_lambda(dist.sample((n, 1)).to(device), cfg)
     if spec.kind == "dmsr_cosine_mix":
         t = torch.rand(n, 1, device=device).clamp(eps, 1.0 - eps)
         cos = -2.0 * torch.log(torch.tan(0.5 * math.pi * t))
@@ -138,12 +135,6 @@ def _laplace_pdf(lam: np.ndarray, c: float, b: float) -> np.ndarray:
 
 def _cosine_vp_pdf(lam: np.ndarray) -> np.ndarray:
     return 1.0 / (2.0 * math.pi * np.cosh(0.5 * lam))
-
-
-def _studentt_pdf(lam: np.ndarray, mu: float, sigma: float, nu: float) -> np.ndarray:
-    z = (lam - mu) / sigma
-    c = math.gamma((nu + 1.0) / 2.0) / (math.gamma(nu / 2.0) * math.sqrt(nu * math.pi) * sigma)
-    return c * (1.0 + z * z / nu) ** (-(nu + 1.0) / 2.0)
 
 
 def _linear_vp_pdf(lam: np.ndarray, cfg: ExperimentConfig, n: int = 8000) -> np.ndarray:
@@ -168,8 +159,6 @@ def schedule_density(spec: ScheduleSpec, lam: np.ndarray, cfg: ExperimentConfig)
         return _laplace_pdf(lam, 0.0, float(spec.scale if spec.scale is not None else 0.5))
     if k == "cosine_vp":
         return _cosine_vp_pdf(lam)
-    if k == "dmsr_studentt":
-        return _studentt_pdf(lam, float(spec.center_lambda), float(spec.scale), float(spec.df))
     if k == "dmsr_cosine_mix":
         w = float(spec.weight)
         return (1.0 - w) * _cosine_vp_pdf(lam) + w * _normal_pdf(lam, float(spec.center_lambda), float(spec.scale))
@@ -210,12 +199,6 @@ def build_schedules(lambda_r_star: float, cfg: ExperimentConfig) -> list[Schedul
                 f"{cname}_laplace_b{w}", "dmsr_laplace",
                 center_lambda=cval, scale=w,
                 note=f"Laplace(center={ctxt}, b={w}).{hang}"))
-    # DMSR-Student-t: λ_R* 중심 + 무거운 꼬리(끝까지 안 죽음). cosmix 대체.
-    for s in cfg.studentt_scales:
-        specs.append(ScheduleSpec(
-            f"dmsr_studentt_s{s}", "dmsr_studentt",
-            center_lambda=lambda_r_star, scale=s, df=cfg.studentt_df,
-            note=f"Student-t(lambda_R*={lambda_r_star:.2f}, scale={s}, nu={cfg.studentt_df}) — heavy tails."))
     if cfg.include_cosmix:
         for w in cfg.mix_weights:
             specs.append(ScheduleSpec(

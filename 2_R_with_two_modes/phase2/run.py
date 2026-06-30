@@ -1127,10 +1127,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-center0",     dest="include_center0", action="store_false",
                    help="중심 0 대조군(Normal@0, Laplace@0=Hang)을 빼고 λ_R* 중심만 실행.")
     p.set_defaults(include_center0=True)
-    p.add_argument("--studentt-scales", type=float, nargs="+", default=None,
-                   help="DMSR-Student-t(λ_R* 중심, 무거운 꼬리)의 폭 sweep (예: --studentt-scales 1.0 2.5).")
-    p.add_argument("--studentt-df",    type=float, default=3.0,
-                   help="Student-t 자유도 ν (꼬리 두께; 작을수록 두꺼움, 1=Cauchy, ∞=Normal).")
     p.add_argument("--include-cosmix", action="store_true",
                    help="(구) DMSR×cosine 혼합 schedule도 추가(기본 OFF; Student-t로 대체됨).")
     p.add_argument("--mix-weights",    type=float, nargs="+", default=None,
@@ -1178,8 +1174,6 @@ def main() -> None:
         compile_model=args.compile_model,
         width_values=tuple(args.width_values) if args.width_values else (0.5, 1.5, 4.0),
         include_center0=args.include_center0,
-        studentt_scales=tuple(args.studentt_scales) if args.studentt_scales else (1.0, 2.5),
-        studentt_df=args.studentt_df,
         include_cosmix=args.include_cosmix,
         mix_weights=tuple(args.mix_weights) if args.mix_weights else (0.5, 0.8),
         mix_scale=args.mix_scale,

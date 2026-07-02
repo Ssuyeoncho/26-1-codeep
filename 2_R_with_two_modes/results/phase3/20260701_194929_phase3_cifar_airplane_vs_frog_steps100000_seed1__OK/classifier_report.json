@@ -1,0 +1,41 @@
+{
+  "class_names": [
+    "airplane",
+    "frog"
+  ],
+  "n_classes": 2,
+  "accuracy": 0.9815,
+  "confusion_matrix": [
+    [
+      983,
+      17
+    ],
+    [
+      20,
+      980
+    ]
+  ],
+  "per_class": [
+    {
+      "class": "airplane",
+      "precision": 0.9800598205383848,
+      "recall": 0.983,
+      "f1": 0.981527708437344,
+      "support": 1000
+    },
+    {
+      "class": "frog",
+      "precision": 0.9829488465396189,
+      "recall": 0.98,
+      "f1": 0.9814722083124687,
+      "support": 1000
+    }
+  ],
+  "macro_precision": 0.9815043335390019,
+  "macro_recall": 0.9815,
+  "macro_f1": 0.9814999583749064,
+  "weighted_precision": 0.9815043335390019,
+  "weighted_recall": 0.9815,
+  "weighted_f1": 0.9814999583749064,
+  "n_samples": 2000
+}

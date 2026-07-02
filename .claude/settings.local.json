@@ -38,7 +38,13 @@
       "Bash(grep -c studentt __TRACKED_VAR__/schedules.json)",
       "Bash(python3 -m py_compile phase3/config.py phase3/models.py phase3/experiment.py phase3/run.py)",
       "Bash(KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 python3 -)",
-      "Bash(python3 -c \"import dataclasses; from phase3.config import ExperimentConfig; c=ExperimentConfig\\(\\); print\\(' class_cond:',c.class_cond,'| num_classes:',c.num_classes,'| cfg_scale:',c.cfg_scale,'| cond_dropout:',c.cond_dropout_prob\\)\")"
+      "Bash(python3 -c \"import dataclasses; from phase3.config import ExperimentConfig; c=ExperimentConfig\\(\\); print\\(' class_cond:',c.class_cond,'| num_classes:',c.num_classes,'| cfg_scale:',c.cfg_scale,'| cond_dropout:',c.cond_dropout_prob\\)\")",
+      "Bash(awk '{print $6, $7, $9, \" \" $NF}')",
+      "Bash(extract-text \"/Users/chosuyeon/Downloads/결과보고서 2, 3장 수정 \\(2\\).docx\")",
+      "Bash(pandoc --track-changes=all \"/Users/chosuyeon/Downloads/결과보고서 2, 3장 수정 \\(2\\).docx\" -o \"/private/tmp/claude-501/-Users-chosuyeon-Desktop-26-1-codeep/bcc99780-ec3a-4bfe-8374-c9f1df156aa7/scratchpad/report.md\")",
+      "Read(//Users/chosuyeon/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/e544fd27-db6c-4e30-9a77-af746f4d10cc/20c1ea2a-5c09-48bc-935f-d38b2d76747f/skills/docx/scripts/**)",
+      "Bash(python3 -c \"import docx\")",
+      "Bash(python3 '/Users/chosuyeon/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/e544fd27-db6c-4e30-9a77-af746f4d10cc/20c1ea2a-5c09-48bc-935f-d38b2d76747f/skills/docx/scripts/office/unpack.py' '/Users/chosuyeon/Downloads/결과보고서 2, 3장 수정 \\(2\\).docx' /private/tmp/claude-501/-Users-chosuyeon-Desktop-26-1-codeep/bcc99780-ec3a-4bfe-8374-c9f1df156aa7/scratchpad/unpacked)"
     ]
   }
 }
